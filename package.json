@@ -1,0 +1,52 @@
+{
+  "name": "game-log-analyzer",
+  "version": "1.0.0",
+  "description": "游戏客服日志分析平台",
+  "main": "dist/main/main/main.js",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:renderer\" \"npm run dev:main\" \"npm run dev:electron\"",
+    "dev:renderer": "vite",
+    "dev:main": "tsc -p tsconfig.main.json -w",
+    "dev:electron": "wait-on tcp:5173 dist/main/main.js && cross-env NODE_ENV=development electron .",
+    "build": "npm run build:renderer && npm run build:main && npm run build:electron",
+    "build:renderer": "vite build",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:electron": "electron-builder",
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.43",
+    "@types/react-dom": "^18.2.17",
+    "@types/node": "^20.10.6",
+    "@vitejs/plugin-react": "^4.2.1",
+    "typescript": "^5.2.2",
+    "vite": "^5.0.8",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "concurrently": "^8.2.2",
+    "wait-on": "^7.2.0",
+    "cross-env": "^7.0.3",
+    "@typescript-eslint/eslint-plugin": "^6.14.0",
+    "@typescript-eslint/parser": "^6.14.0",
+    "eslint": "^8.55.0"
+  },
+  "build": {
+    "appId": "com.gamelog.analyzer",
+    "productName": "游戏日志分析平台",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    }
+  }
+}
