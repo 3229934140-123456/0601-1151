@@ -40,6 +40,43 @@ export interface LogFile {
   error?: string;
 }
 
+export type FileParseStatus = 'success' | 'partial' | 'failed' | 'empty' | 'unknown_format';
+
+export interface FileImportDetail {
+  path: string;
+  name: string;
+  size?: number;
+  status: FileParseStatus;
+  totalLines: number;
+  parsedCount: number;
+  failedCount: number;
+  errorMessage?: string;
+  sampleErrors?: string[];
+  sourceZip?: string;
+}
+
+export interface ImportSummary {
+  totalFiles: number;
+  successFiles: number;
+  failedFiles: number;
+  emptyFiles: number;
+  unknownFormatFiles: number;
+  totalParsedEvents: number;
+  totalFailedLines: number;
+  details: FileImportDetail[];
+}
+
+export type OperationStatus = 'success' | 'failed' | 'cancelled' | 'not_supported';
+
+export interface OperationNotification {
+  id: string;
+  type: 'copy' | 'export' | 'import' | 'save';
+  status: OperationStatus;
+  message: string;
+  detail?: string;
+  timestamp: Date;
+}
+
 export interface PlayerSession {
   playerId: string;
   playerName: string;

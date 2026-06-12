@@ -155,14 +155,14 @@ export function registerIpcHandlers(): void {
     });
 
     if (result.canceled || !result.filePath) {
-      return false;
+      return { success: false, cancelled: true, error: '用户取消' };
     }
 
     try {
       fs.writeFileSync(result.filePath, report, 'utf-8');
-      return true;
-    } catch {
-      return false;
+      return { success: true, filePath: result.filePath };
+    } catch (err) {
+      return { success: false, error: String(err) };
     }
   });
 
@@ -185,7 +185,11 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('copy-to-clipboard', async (_event, text: string) => {
-    clipboard.writeText(text);
-    return true;
+    try {
+      clipboard.writeText(text);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
   });
 }

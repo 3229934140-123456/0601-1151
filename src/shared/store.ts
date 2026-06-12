@@ -1,7 +1,8 @@
-import type { LogEvent, LogFile, SearchFilter, WorkTicketSummary } from './types';
+import type { LogEvent, LogFile, SearchFilter, WorkTicketSummary, ImportSummary, OperationNotification, OperationStatus } from './types';
 
 export interface AppState {
   logFiles: LogFile[];
+  importSummary: ImportSummary | null;
   allEvents: LogEvent[];
   filteredEvents: LogEvent[];
   selectedPlayerId: string | null;
@@ -17,10 +18,12 @@ export interface AppState {
   isLoading: boolean;
   loadingProgress: number;
   loadingMessage: string;
+  notifications: OperationNotification[];
 }
 
 export const initialState: AppState = {
   logFiles: [],
+  importSummary: null,
   allEvents: [],
   filteredEvents: [],
   selectedPlayerId: null,
@@ -36,11 +39,13 @@ export const initialState: AppState = {
   isLoading: false,
   loadingProgress: 0,
   loadingMessage: '',
+  notifications: [],
 };
 
 export type AppAction =
   | { type: 'SET_LOADING'; payload: { isLoading: boolean; progress?: number; message?: string } }
   | { type: 'ADD_LOG_FILES'; payload: LogFile[] }
+  | { type: 'SET_IMPORT_SUMMARY'; payload: ImportSummary }
   | { type: 'SET_ALL_EVENTS'; payload: LogEvent[] }
   | { type: 'SET_FILTERED_EVENTS'; payload: LogEvent[] }
   | { type: 'SET_SELECTED_PLAYER'; payload: string | null }
@@ -60,6 +65,11 @@ export type AppAction =
   | { type: 'SET_SUMMARY'; payload: WorkTicketSummary | null }
   | { type: 'SET_ACTIVE_WINDOW'; payload: AppState['activeWindow'] }
   | { type: 'UPDATE_EVENT'; payload: LogEvent }
+  | {
+      type: 'ADD_NOTIFICATION';
+      payload: { type: OperationNotification['type']; status: OperationStatus; message: string; detail?: string };
+    }
+  | { type: 'DISMISS_NOTIFICATION'; payload: string }
   | { type: 'RESET_ALL' };
 
 export function appReducer(state: AppState, action: AppAction): AppState {
@@ -76,6 +86,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return {
         ...state,
         logFiles: [...state.logFiles, ...action.payload],
+      };
+
+    case 'SET_IMPORT_SUMMARY':
+      return {
+        ...state,
+        importSummary: action.payload,
       };
 
     case 'SET_ALL_EVENTS':
@@ -245,12 +261,35 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ),
       };
 
+    case 'ADD_NOTIFICATION': {
+      const notification: OperationNotification = {
+        id: Math.random().toString(36).substring(2, 15),
+        type: action.payload.type,
+        status: action.payload.status,
+        message: action.payload.message,
+        detail: action.payload.detail,
+        timestamp: new Date(),
+      };
+      return {
+        ...state,
+        notifications: [...state.notifications, notification],
+      };
+    }
+
+    case 'DISMISS_NOTIFICATION':
+      return {
+        ...state,
+        notifications: state.notifications.filter((n) => n.id !== action.payload),
+      };
+
     case 'RESET_ALL':
       return {
         ...initialState,
         savedFilters: state.savedFilters,
         activeWindow: 'import',
         mergedRepresentatives: new Map(),
+        importSummary: null,
+        notifications: [],
       };
 
     default:

@@ -1,8 +1,8 @@
 import React, { createContext, useContext, useReducer, useEffect, useCallback, useRef } from 'react';
 import type { AppState, AppAction } from '@shared/store';
 import { initialState, appReducer } from '@shared/store';
-import { parseLogFiles, extractUniquePlayerIds } from '@shared/logParser';
-import type { LogFile, SearchFilter } from '@shared/types';
+import { parseLogFilesWithDetail, extractUniquePlayerIds } from '@shared/logParser';
+import type { LogFile, SearchFilter, OperationNotification } from '@shared/types';
 import { SAMPLE_LOG_FILE } from '@shared/sampleData';
 
 interface AppContextType {
@@ -11,6 +11,8 @@ interface AppContextType {
   loadLogFiles: (filePaths: string[]) => Promise<void>;
   loadSampleData: () => Promise<void>;
   applyFilter: (filter: SearchFilter) => void;
+  addNotification: (type: OperationNotification['type'], status: OperationNotification['status'], message: string, detail?: string) => void;
+  dismissNotification: (id: string) => void;
 }
 
 const AppContext = createContext<AppContextType | null>(null);
@@ -35,6 +37,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const addNotification = useCallback(
+    (type: OperationNotification['type'], status: OperationNotification['status'], message: string, detail?: string) => {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { type, status, message, detail } });
+    },
+    []
+  );
+
+  const dismissNotification = useCallback((id: string) => {
+    dispatch({ type: 'DISMISS_NOTIFICATION', payload: id });
+  }, []);
+
   const processLogFiles = useCallback(async (files: LogFile[]) => {
     dispatch({
       type: 'SET_LOADING',
@@ -49,7 +62,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         payload: { isLoading: true, progress: 50, message: '正在解析日志内容...' },
       });
 
-      const events = parseLogFiles(files);
+      const { events, summary } = parseLogFilesWithDetail(files);
+      dispatch({ type: 'SET_IMPORT_SUMMARY', payload: summary });
       dispatch({ type: 'SET_ALL_EVENTS', payload: events });
 
       const playerIds = extractUniquePlayerIds(events);
@@ -62,14 +76,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         payload: { isLoading: true, progress: 100, message: '解析完成！' },
       });
 
+      const status =
+        summary.failedFiles === 0 && summary.emptyFiles === 0
+          ? 'success'
+          : summary.successFiles > 0
+          ? 'success'
+          : 'failed';
+      const msg = `导入完成：${summary.successFiles}个文件成功，${summary.totalParsedEvents}条记录`;
+      const detail =
+        summary.emptyFiles > 0 || summary.unknownFormatFiles > 0
+          ? `${summary.emptyFiles}个空文件，${summary.unknownFormatFiles}个格式错误`
+          : undefined;
+
+      addNotification('import', status, msg, detail);
+
       setTimeout(() => {
         dispatch({ type: 'SET_LOADING', payload: { isLoading: false, progress: 0, message: '' } });
       }, 800);
     } catch (err) {
       dispatch({ type: 'SET_LOADING', payload: { isLoading: false, progress: 0, message: '' } });
+      addNotification('import', 'failed', '导入失败', String(err));
       console.error('Failed to process log files:', err);
     }
-  }, []);
+  }, [addNotification]);
 
   const loadLogFiles = useCallback(async (filePaths: string[]) => {
     if (!window.electronAPI || filePaths.length === 0) return;
@@ -142,7 +171,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <AppContext.Provider value={{ state, dispatch, loadLogFiles, loadSampleData, applyFilter }}>
+    <AppContext.Provider
+      value={{
+        state,
+        dispatch,
+        loadLogFiles,
+        loadSampleData,
+        applyFilter,
+        addNotification,
+        dismissNotification,
+      }}
+    >
       {children}
     </AppContext.Provider>
   );

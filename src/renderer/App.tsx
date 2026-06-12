@@ -5,6 +5,7 @@ import TimelineWindow from './components/TimelineWindow';
 import SearchWindow from './components/SearchWindow';
 import MarkWindow from './components/MarkWindow';
 import SummaryWindow from './components/SummaryWindow';
+import NotificationToast from './components/NotificationToast';
 import type { WindowId } from '@shared/types';
 
 const TABS: { id: WindowId; label: string; icon: string }[] = [
@@ -37,6 +38,7 @@ const AppContent: React.FC = () => {
 
   return (
     <div className="app-container">
+      <NotificationToast />
       <header className="app-header">
         <div className="app-title">
           <span className="app-title-icon">🎮</span>

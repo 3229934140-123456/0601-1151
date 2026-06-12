@@ -1,4 +1,4 @@
-import type { LogEvent, LogEventType, LogFile, PlayerSession } from './types';
+import type { LogEvent, LogEventType, LogFile, PlayerSession, FileImportDetail, FileParseStatus, ImportSummary } from './types';
 
 function generateId(): string {
   return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
@@ -317,4 +317,427 @@ export function formatTimestamp(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
     date.getHours()
   )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function tryParseJson(text: string): unknown | null {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function isJsonLike(content: string): boolean {
+  const trimmed = content.trim();
+  return trimmed.startsWith('{') || trimmed.startsWith('[');
+}
+
+function extractJsonStringValue(obj: unknown, keys: string[]): string | undefined {
+  if (typeof obj !== 'object' || obj === null) return undefined;
+  const o = obj as Record<string, unknown>;
+  for (const key of keys) {
+    const value = o[key];
+    if (value !== undefined && value !== null) {
+      return String(value);
+    }
+  }
+  return undefined;
+}
+
+function extractJsonNumberValue(obj: unknown, keys: string[]): number | undefined {
+  if (typeof obj !== 'object' || obj === null) return undefined;
+  const o = obj as Record<string, unknown>;
+  for (const key of keys) {
+    const value = o[key];
+    if (typeof value === 'number') {
+      return value;
+    }
+    if (typeof value === 'string') {
+      const num = Number(value);
+      if (!isNaN(num)) return num;
+    }
+  }
+  return undefined;
+}
+
+function parseJsonTimestamp(obj: unknown): Date | null {
+  const tsStr = extractJsonStringValue(obj, ['timestamp', 'time', 'datetime', 'created_at', 'createdAt', 'log_time', 'event_time', 't']);
+  if (tsStr) {
+    const date = parseTimestamp(tsStr);
+    if (date) return date;
+  }
+  const tsNum = extractJsonNumberValue(obj, ['timestamp', 'time', 'ts', 'unix_time']);
+  if (tsNum !== undefined) {
+    let ms = tsNum;
+    if (tsNum < 1e12) ms *= 1000;
+    const date = new Date(ms);
+    if (!isNaN(date.getTime())) return date;
+  }
+  return null;
+}
+
+function parseJsonPlayerId(obj: unknown): string | null {
+  const id = extractJsonStringValue(obj, ['player_id', 'playerId', 'user_id', 'userId', 'uid', 'pid', 'playerid', 'account_id']);
+  if (id) return id;
+  const idNum = extractJsonNumberValue(obj, ['player_id', 'playerId', 'user_id', 'userId', 'uid', 'pid']);
+  if (idNum !== undefined) return String(idNum);
+  return null;
+}
+
+function parseJsonPlayerName(obj: unknown): string | undefined {
+  return extractJsonStringValue(obj, ['player_name', 'playerName', 'user_name', 'userName', 'nickname', 'role_name', 'name']);
+}
+
+function parseJsonEventType(obj: unknown): LogEventType {
+  const typeStr = extractJsonStringValue(obj, ['event_type', 'eventType', 'type', 'action', 'category', 'event']);
+  if (typeStr) {
+    return detectEventType(typeStr);
+  }
+  const content = extractJsonStringValue(obj, ['message', 'content', 'msg', 'detail', 'description', 'data']);
+  if (content) {
+    return detectEventType(content);
+  }
+  return 'unknown';
+}
+
+function parseJsonSeverity(obj: unknown): 'info' | 'warning' | 'error' | 'critical' {
+  const sev = extractJsonStringValue(obj, ['severity', 'level', 'log_level', 'status']);
+  if (sev) {
+    return detectSeverity(`[${sev}]`);
+  }
+  const content = extractJsonStringValue(obj, ['message', 'content', 'msg', 'type', 'action']);
+  if (content) {
+    return detectSeverity(content);
+  }
+  return 'info';
+}
+
+function extractJsonContent(obj: unknown): string {
+  const parts: string[] = [];
+  if (typeof obj === 'object' && obj !== null) {
+    const o = obj as Record<string, unknown>;
+    ['action', 'event_type', 'type', 'message', 'content', 'msg', 'detail', 'description'].forEach((key) => {
+      if (o[key] !== undefined && o[key] !== null) {
+        parts.push(String(o[key]));
+      }
+    });
+    const remaining: Record<string, unknown> = {};
+    Object.keys(o).forEach((key) => {
+      if (!['timestamp', 'time', 'datetime', 'event_type', 'eventType', 'type', 'action', 'category', 'event', 'message', 'content', 'msg', 'detail', 'description', 'player_id', 'playerId', 'user_id', 'userId', 'uid', 'pid', 'player_name', 'playerName', 'user_name', 'userName', 'nickname', 'role_name', 'name', 'severity', 'level', 'log_level', 'status'].includes(key)) {
+        remaining[key] = o[key];
+      }
+    });
+    if (Object.keys(remaining).length > 0) {
+      parts.push(JSON.stringify(remaining));
+    }
+  }
+  return parts.join(' ').trim() || JSON.stringify(obj);
+}
+
+function parseJsonDetails(obj: unknown): Record<string, string | number | boolean> | undefined {
+  if (typeof obj !== 'object' || obj === null) return undefined;
+  const details: Record<string, string | number | boolean> = {};
+  const o = obj as Record<string, unknown>;
+  Object.keys(o).forEach((key) => {
+    const value = o[key];
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      details[key.toLowerCase()] = value;
+    }
+  });
+  return Object.keys(details).length > 0 ? details : undefined;
+}
+
+function eventFromJsonObject(obj: unknown, raw: string, index: number, fileName: string): LogEvent | null {
+  if (typeof obj !== 'object' || obj === null) return null;
+  const timestamp = parseJsonTimestamp(obj) || new Date();
+  const playerId = parseJsonPlayerId(obj) || 'unknown';
+  const playerName = parseJsonPlayerName(obj);
+  const type = parseJsonEventType(obj);
+  const severity = parseJsonSeverity(obj);
+  const content = extractJsonContent(obj);
+  const details = parseJsonDetails(obj);
+  const rawTimestamp = raw.match(/\[[^\]]+\]|\d{4}[^]*\d{2}:\d{2}:\d{2}/)?.[0] || extractJsonStringValue(obj, ['timestamp', 'time', 'datetime', 'created_at']) || '';
+  return {
+    id: generateId(),
+    timestamp,
+    rawTimestamp,
+    type,
+    playerId,
+    playerName,
+    content,
+    rawContent: raw,
+    details,
+    severity,
+  };
+}
+
+function parseJsonArray(arr: unknown[], rawLines: string[], fileName: string): { events: LogEvent[]; detail: FileImportDetail } {
+  const events: LogEvent[] = [];
+  const errors: string[] = [];
+  let failedCount = 0;
+  arr.forEach((item, index) => {
+    try {
+      const event = eventFromJsonObject(item, rawLines[index] || JSON.stringify(item), index, fileName);
+      if (event) {
+        events.push(event);
+      } else {
+        failedCount++;
+        if (errors.length < 5) {
+          errors.push(`行${index + 1}: 无法解析JSON对象`);
+        }
+      }
+    } catch (err) {
+      failedCount++;
+      if (errors.length < 5) {
+        errors.push(`行${index + 1}: ${String(err)}`);
+      }
+    }
+  });
+  const status: FileParseStatus = failedCount === 0 ? 'success' : events.length > 0 ? 'partial' : 'failed';
+  return {
+    events,
+    detail: {
+      path: fileName,
+      name: fileName,
+      status,
+      totalLines: arr.length,
+      parsedCount: events.length,
+      failedCount,
+      sampleErrors: errors.length > 0 ? errors : undefined,
+    },
+  };
+}
+
+function parseJsonContent(content: string, fileName: string): { events: LogEvent[]; detail: FileImportDetail } {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return {
+      events: [],
+      detail: {
+        path: fileName,
+        name: fileName,
+        status: 'empty',
+        totalLines: 0,
+        parsedCount: 0,
+        failedCount: 0,
+        errorMessage: '文件为空',
+      },
+    };
+  }
+  if (!isJsonLike(trimmed)) {
+    return {
+      events: [],
+      detail: {
+        path: fileName,
+        name: fileName,
+        status: 'unknown_format',
+        totalLines: 0,
+        parsedCount: 0,
+        failedCount: 0,
+        errorMessage: '无法识别为JSON格式',
+      },
+    };
+  }
+  if (trimmed.startsWith('[')) {
+    const parsed = tryParseJson(trimmed);
+    if (Array.isArray(parsed)) {
+      return parseJsonArray(parsed, parsed.map((item) => JSON.stringify(item)), fileName);
+    }
+    if (parsed === null) {
+      return {
+        events: [],
+        detail: {
+          path: fileName,
+          name: fileName,
+          status: 'failed',
+          totalLines: 1,
+          parsedCount: 0,
+          failedCount: 1,
+          errorMessage: 'JSON数组解析失败',
+        },
+      };
+    }
+  }
+  if (trimmed.startsWith('{')) {
+    const lines = trimmed.split(/\r?\n/).filter((l) => l.trim());
+    const events: LogEvent[] = [];
+    const errors: string[] = [];
+    let failedCount = 0;
+    let parsedSingle: LogEvent | null = null;
+    if (lines.length === 1) {
+      const parsed = tryParseJson(lines[0]);
+      if (parsed && typeof parsed === 'object') {
+        parsedSingle = eventFromJsonObject(parsed, lines[0], 0, fileName);
+        if (parsedSingle) {
+          events.push(parsedSingle);
+        }
+      }
+    }
+    if (events.length === 0) {
+      lines.forEach((line, index) => {
+        const lineTrimmed = line.trim();
+        if (!lineTrimmed) return;
+        const parsed = tryParseJson(lineTrimmed);
+        if (parsed && typeof parsed === 'object') {
+          const event = eventFromJsonObject(parsed, lineTrimmed, index, fileName);
+          if (event) {
+            events.push(event);
+          } else {
+            failedCount++;
+            if (errors.length < 5) {
+              errors.push(`行${index + 1}: 无法解析JSON对象`);
+            }
+          }
+        } else {
+          failedCount++;
+          if (errors.length < 5) {
+            errors.push(`行${index + 1}: JSON解析失败`);
+          }
+        }
+      });
+    }
+    const totalLines = lines.length;
+    const status: FileParseStatus = failedCount === 0 ? 'success' : events.length > 0 ? 'partial' : 'failed';
+    return {
+      events,
+      detail: {
+        path: fileName,
+        name: fileName,
+        status,
+        totalLines,
+        parsedCount: events.length,
+        failedCount,
+        sampleErrors: errors.length > 0 ? errors : undefined,
+      },
+    };
+  }
+  return {
+    events: [],
+    detail: {
+      path: fileName,
+      name: fileName,
+      status: 'unknown_format',
+      totalLines: 0,
+      parsedCount: 0,
+      failedCount: 0,
+      errorMessage: '无法识别的JSON格式',
+    },
+  };
+}
+
+function determineFileParseStatus(file: LogFile): FileParseStatus {
+  if (file.error) return 'failed';
+  if (!file.content || !file.content.trim()) return 'empty';
+  return 'success';
+}
+
+export function parseLogContentWithDetail(
+  content: string,
+  fileName: string
+): { events: LogEvent[]; detail: FileImportDetail } {
+  const isJson = fileName.toLowerCase().endsWith('.json');
+  if (isJson) {
+    return parseJsonContent(content, fileName);
+  }
+  const lines = content.split(/\r?\n/);
+  const events: LogEvent[] = [];
+  const errors: string[] = [];
+  let failedCount = 0;
+  let lastKnownPlayerId: string | undefined;
+  let lastKnownPlayerName: string | undefined;
+  let lastEventTime: Date | null = null;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (!line.trim()) continue;
+    try {
+      const event = parseLogLine(line, index, fileName, lastKnownPlayerId, lastKnownPlayerName);
+      if (!event) {
+        failedCount++;
+        if (errors.length < 5) {
+          errors.push(`行${index + 1}: 无法解析`);
+        }
+        continue;
+      }
+      if (lastEventTime && event.timestamp.getTime() - lastEventTime.getTime() > 1000 * 60 * 30) {
+        lastKnownPlayerId = undefined;
+        lastKnownPlayerName = undefined;
+      }
+      if (event.playerId && event.playerId !== 'unknown') {
+        lastKnownPlayerId = event.playerId;
+        if (event.playerName) {
+          lastKnownPlayerName = event.playerName;
+        }
+      }
+      lastEventTime = event.timestamp;
+      events.push(event);
+    } catch (err) {
+      failedCount++;
+      if (errors.length < 5) {
+        errors.push(`行${index + 1}: ${String(err)}`);
+      }
+    }
+  }
+  const totalLines = lines.filter((l) => l.trim()).length;
+  const status: FileParseStatus = failedCount === 0
+    ? totalLines === 0 ? 'empty' : 'success'
+    : events.length > 0
+    ? 'partial'
+    : totalLines === 0
+    ? 'empty'
+    : 'failed';
+  return {
+    events: events.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime()),
+    detail: {
+      path: fileName,
+      name: fileName,
+      status,
+      totalLines,
+      parsedCount: events.length,
+      failedCount,
+      sampleErrors: errors.length > 0 ? errors : undefined,
+    },
+  };
+}
+
+export function parseLogFilesWithDetail(files: LogFile[]): { events: LogEvent[]; summary: ImportSummary } {
+  const allEvents: LogEvent[] = [];
+  const details: FileImportDetail[] = [];
+  const sortedFiles = [...files].sort((a, b) => a.name.localeCompare(b.name));
+  for (const file of sortedFiles) {
+    if (file.error) {
+      details.push({
+        path: file.path,
+        name: file.name,
+        size: file.size,
+        status: 'failed',
+        totalLines: 0,
+        parsedCount: 0,
+        failedCount: 0,
+        errorMessage: file.error,
+      });
+      continue;
+    }
+    const { events, detail } = parseLogContentWithDetail(file.content, file.name);
+    detail.size = file.size;
+    detail.path = file.path;
+    if (file.name.includes('/')) {
+      detail.sourceZip = file.name.split('/')[0];
+    }
+    details.push(detail);
+    allEvents.push(...events);
+  }
+  const summary: ImportSummary = {
+    totalFiles: details.length,
+    successFiles: details.filter((d) => d.status === 'success').length,
+    failedFiles: details.filter((d) => d.status === 'failed' || d.status === 'unknown_format').length,
+    emptyFiles: details.filter((d) => d.status === 'empty').length,
+    unknownFormatFiles: details.filter((d) => d.status === 'unknown_format').length,
+    totalParsedEvents: allEvents.length,
+    totalFailedLines: details.reduce((sum, d) => sum + d.failedCount, 0),
+    details,
+  };
+  return {
+    events: allEvents.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime()),
+    summary,
+  };
 }
