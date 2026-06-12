@@ -1,4 +1,4 @@
-import type { LogEvent, LogEventType, LogFile, PlayerSession, FileImportDetail, FileParseStatus, ImportSummary } from './types';
+import type { LogEvent, LogEventType, LogFile, PlayerSession, FileImportDetail, FileParseStatus, ImportSummary, ImportBatch, ProblemChain } from './types';
 
 function generateId(): string {
   return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
@@ -41,16 +41,16 @@ function parseTimestamp(raw: string): Date | null {
 function detectEventType(content: string): LogEventType {
   const lower = content.toLowerCase();
 
-  if (/登录|login|connected|online/i.test(lower)) return 'login';
-  if (/登出|logout|disconnect|offline/i.test(lower) && !/异常|error|crash/i.test(lower)) return 'logout';
-  if (/掉线|断连|disconnect|timeout|connection lost/i.test(lower)) return 'disconnect';
-  if (/崩溃|crash|fatal|panic/i.test(lower)) return 'crash';
-  if (/道具|背包|物品|item|inventory|bag|获得|使用|消耗|删除/i.test(lower)) return 'item_change';
-  if (/支付|充值|付款|payment|pay|purchase|order|订单|钻石|金币.*充值/i.test(lower)) return 'payment';
+  if (/登录|login|connected|online/i.test(lower) && !/异常|error|crash|fail|失败/i.test(lower)) return 'login';
+  if (/登出|logout|offline/i.test(lower) && !/异常|error|crash|fail|失败|掉线|断/i.test(lower)) return 'logout';
+  if (/掉线|断连|disconnect|timeout|connection.?lost|断开连接|网络断|连接中断|连接超时|网络超时|net.*disconnect|连接异常断|异常断开/i.test(lower)) return 'disconnect';
+  if (/崩溃|crash|fatal|panic|闪退|卡死|无响应|not.?responding|hang|freeze/i.test(lower)) return 'crash';
+  if (/道具|背包|物品|item|inventory|bag|获得|使用|消耗|删除|捡起|丢弃|购买成功|发放/i.test(lower)) return 'item_change';
+  if (/支付|充值|付款|payment|pay|purchase|order|订单|钻石.*充值|recharge|到账|扣费|退款/i.test(lower)) return 'payment';
   if (/任务|quest|mission/i.test(lower)) return 'quest';
   if (/战斗|combat|fight|battle|attack|kill|die|death/i.test(lower)) return 'combat';
   if (/聊天|chat|message|say|talk/i.test(lower)) return 'chat';
-  if (/系统|system|server|维护|update/i.test(lower)) return 'system';
+  if (/系统|system|server|维护|update|启动|关闭服务/i.test(lower)) return 'system';
 
   return 'unknown';
 }
@@ -633,16 +633,23 @@ function determineFileParseStatus(file: LogFile): FileParseStatus {
 
 export function parseLogContentWithDetail(
   content: string,
-  fileName: string
+  fileName: string,
+  batchId?: string
 ): { events: LogEvent[]; detail: FileImportDetail } {
   const isJson = fileName.toLowerCase().endsWith('.json');
   if (isJson) {
-    return parseJsonContent(content, fileName);
+    const result = parseJsonContent(content, fileName);
+    result.events.forEach((e) => { e.batchId = batchId; });
+    result.detail.batchId = batchId;
+    return result;
   }
   const lines = content.split(/\r?\n/);
   const events: LogEvent[] = [];
   const errors: string[] = [];
+  const sampleSuccessLines: string[] = [];
+  const sampleFailedLines: string[] = [];
   let failedCount = 0;
+  let unknownCount = 0;
   let lastKnownPlayerId: string | undefined;
   let lastKnownPlayerName: string | undefined;
   let lastEventTime: Date | null = null;
@@ -653,8 +660,18 @@ export function parseLogContentWithDetail(
       const event = parseLogLine(line, index, fileName, lastKnownPlayerId, lastKnownPlayerName);
       if (!event) {
         failedCount++;
-        if (errors.length < 5) {
+        if (sampleFailedLines.length < 5) {
+          sampleFailedLines.push(line.trim().substring(0, 120));
           errors.push(`行${index + 1}: 无法解析`);
+        }
+        continue;
+      }
+      if (event.type === 'unknown' && event.playerId === 'unknown') {
+        unknownCount++;
+        failedCount++;
+        if (sampleFailedLines.length < 5) {
+          sampleFailedLines.push(line.trim().substring(0, 120));
+          errors.push(`行${index + 1}: 内容无法识别为已知事件类型`);
         }
         continue;
       }
@@ -669,10 +686,15 @@ export function parseLogContentWithDetail(
         }
       }
       lastEventTime = event.timestamp;
+      event.batchId = batchId;
       events.push(event);
+      if (sampleSuccessLines.length < 5) {
+        sampleSuccessLines.push(line.trim().substring(0, 120));
+      }
     } catch (err) {
       failedCount++;
-      if (errors.length < 5) {
+      if (sampleFailedLines.length < 5) {
+        sampleFailedLines.push(line.trim().substring(0, 120));
         errors.push(`行${index + 1}: ${String(err)}`);
       }
     }
@@ -684,6 +706,8 @@ export function parseLogContentWithDetail(
     ? 'partial'
     : totalLines === 0
     ? 'empty'
+    : unknownCount === totalLines
+    ? 'unknown_format'
     : 'failed';
   return {
     events: events.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime()),
@@ -695,15 +719,29 @@ export function parseLogContentWithDetail(
       parsedCount: events.length,
       failedCount,
       sampleErrors: errors.length > 0 ? errors : undefined,
+      sampleSuccessLines: sampleSuccessLines.length > 0 ? sampleSuccessLines : undefined,
+      sampleFailedLines: sampleFailedLines.length > 0 ? sampleFailedLines : undefined,
+      batchId,
     },
   };
 }
 
-export function parseLogFilesWithDetail(files: LogFile[]): { events: LogEvent[]; summary: ImportSummary } {
-  const allEvents: LogEvent[] = [];
+export function parseLogFilesWithDetail(
+  files: LogFile[],
+  existingEvents: LogEvent[] = []
+): { events: LogEvent[]; summary: ImportSummary; batch: ImportBatch } {
+  const batchId = generateId();
+  const allEvents: LogEvent[] = [...existingEvents];
   const details: FileImportDetail[] = [];
+  const sourcePaths: string[] = [];
+  const sourceZipNames: string[] = [];
   const sortedFiles = [...files].sort((a, b) => a.name.localeCompare(b.name));
   for (const file of sortedFiles) {
+    if (!sourcePaths.includes(file.path)) sourcePaths.push(file.path);
+    if (file.name.includes('/')) {
+      const zipName = file.name.split('/')[0];
+      if (!sourceZipNames.includes(zipName)) sourceZipNames.push(zipName);
+    }
     if (file.error) {
       details.push({
         path: file.path,
@@ -714,10 +752,11 @@ export function parseLogFilesWithDetail(files: LogFile[]): { events: LogEvent[];
         parsedCount: 0,
         failedCount: 0,
         errorMessage: file.error,
+        batchId,
       });
       continue;
     }
-    const { events, detail } = parseLogContentWithDetail(file.content, file.name);
+    const { events, detail } = parseLogContentWithDetail(file.content, file.name, batchId);
     detail.size = file.size;
     detail.path = file.path;
     if (file.name.includes('/')) {
@@ -732,12 +771,138 @@ export function parseLogFilesWithDetail(files: LogFile[]): { events: LogEvent[];
     failedFiles: details.filter((d) => d.status === 'failed' || d.status === 'unknown_format').length,
     emptyFiles: details.filter((d) => d.status === 'empty').length,
     unknownFormatFiles: details.filter((d) => d.status === 'unknown_format').length,
-    totalParsedEvents: allEvents.length,
+    totalParsedEvents: allEvents.length - existingEvents.length,
     totalFailedLines: details.reduce((sum, d) => sum + d.failedCount, 0),
+    details,
+  };
+  const batch: ImportBatch = {
+    id: batchId,
+    timestamp: new Date(),
+    sourcePaths,
+    sourceZipNames,
+    fileCount: details.length,
+    successFiles: summary.successFiles,
+    failedFiles: summary.failedFiles,
+    emptyFiles: summary.emptyFiles,
+    unknownFormatFiles: summary.unknownFormatFiles,
+    totalParsedEvents: summary.totalParsedEvents,
+    totalFailedLines: summary.totalFailedLines,
     details,
   };
   return {
     events: allEvents.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime()),
     summary,
+    batch,
   };
+}
+
+export function buildProblemChains(events: LogEvent[], playerId: string): ProblemChain[] {
+  const playerEvents = events
+    .filter((e) => e.playerId === playerId)
+    .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+  if (playerEvents.length === 0) return [];
+
+  const chains: ProblemChain[] = [];
+  const CONTEXT_WINDOW_MS = 5 * 60 * 1000;
+
+  const paymentEvents = playerEvents.filter((e) => e.type === 'payment');
+  const crashEvents = playerEvents.filter((e) => e.type === 'crash' || e.type === 'disconnect');
+  const itemEvents = playerEvents.filter((e) => e.type === 'item_change');
+  const disconnectEvents = playerEvents.filter((e) => e.type === 'disconnect');
+
+  for (const payment of paymentEvents) {
+    const related = playerEvents.filter(
+      (e) =>
+        e.id !== payment.id &&
+        Math.abs(e.timestamp.getTime() - payment.timestamp.getTime()) <= CONTEXT_WINDOW_MS
+    );
+    const hasItemChange = related.some((e) => e.type === 'item_change');
+    const hasDisconnect = related.some((e) => e.type === 'disconnect' || e.type === 'crash');
+    let description = `支付事件 @ ${formatTimestamp(payment.timestamp)}`;
+    if (!hasItemChange) description += ' — 之后未见道具发放记录';
+    if (hasDisconnect) description += ' — 附近有断线事件';
+    chains.push({
+      id: generateId(),
+      playerId,
+      anchorEvent: payment,
+      relatedEvents: related,
+      chainType: 'payment_missing',
+      startTime: new Date(payment.timestamp.getTime() - CONTEXT_WINDOW_MS),
+      endTime: new Date(payment.timestamp.getTime() + CONTEXT_WINDOW_MS),
+      description,
+    });
+  }
+
+  for (const crash of crashEvents) {
+    const beforeEvents = playerEvents.filter(
+      (e) =>
+        e.id !== crash.id &&
+        e.timestamp.getTime() <= crash.timestamp.getTime() &&
+        e.timestamp.getTime() >= crash.timestamp.getTime() - CONTEXT_WINDOW_MS
+    );
+    const afterEvents = playerEvents.filter(
+      (e) =>
+        e.id !== crash.id &&
+        e.timestamp.getTime() > crash.timestamp.getTime() &&
+        e.timestamp.getTime() <= crash.timestamp.getTime() + CONTEXT_WINDOW_MS
+    );
+    const related = [...beforeEvents, ...afterEvents];
+    const chainType = crash.type === 'crash' ? 'crash_freeze' as const : 'disconnect_anomaly' as const;
+    let description = `${crash.type === 'crash' ? '崩溃' : '掉线'} @ ${formatTimestamp(crash.timestamp)}`;
+    if (beforeEvents.length > 0) {
+      const lastBefore = beforeEvents[beforeEvents.length - 1];
+      description += ` — 之前: ${lastBefore.content.substring(0, 40)}`;
+    }
+    chains.push({
+      id: generateId(),
+      playerId,
+      anchorEvent: crash,
+      relatedEvents: related,
+      chainType,
+      startTime: new Date(crash.timestamp.getTime() - CONTEXT_WINDOW_MS),
+      endTime: new Date(crash.timestamp.getTime() + CONTEXT_WINDOW_MS),
+      description,
+    });
+  }
+
+  for (const item of itemEvents) {
+    const lower = item.content.toLowerCase();
+    if (/丢失|消失|减少|missing|lost|remove|-?\d/.test(lower) || /消耗|删除/.test(lower)) {
+      const related = playerEvents.filter(
+        (e) =>
+          e.id !== item.id &&
+          Math.abs(e.timestamp.getTime() - item.timestamp.getTime()) <= CONTEXT_WINDOW_MS
+      );
+      const hasPayment = related.some((e) => e.type === 'payment');
+      let description = `道具变更 @ ${formatTimestamp(item.timestamp)}: ${item.content.substring(0, 50)}`;
+      if (!hasPayment) description += ' — 附近无支付记录';
+      chains.push({
+        id: generateId(),
+        playerId,
+        anchorEvent: item,
+        relatedEvents: related,
+        chainType: 'item_missing',
+        startTime: new Date(item.timestamp.getTime() - CONTEXT_WINDOW_MS),
+        endTime: new Date(item.timestamp.getTime() + CONTEXT_WINDOW_MS),
+        description,
+      });
+    }
+  }
+
+  return chains.sort((a, b) => a.anchorEvent.timestamp.getTime() - b.anchorEvent.timestamp.getTime());
+}
+
+export function getEventContext(
+  event: LogEvent,
+  allEvents: LogEvent[],
+  contextMinutes: number = 3
+): LogEvent[] {
+  const windowMs = contextMinutes * 60 * 1000;
+  return allEvents
+    .filter(
+      (e) =>
+        e.playerId === event.playerId &&
+        Math.abs(e.timestamp.getTime() - event.timestamp.getTime()) <= windowMs
+    )
+    .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 }

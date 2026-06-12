@@ -1,12 +1,15 @@
 import React, { useCallback, useState, useRef, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import type { FileImportDetail, FileParseStatus } from '@shared/types';
+import type { FileImportDetail, FileParseStatus, ImportBatch } from '@shared/types';
+import { formatTimestamp } from '@shared/logParser';
 
 const ImportWindow: React.FC = () => {
   const { state, dispatch, loadLogFiles, loadSampleData } = useApp();
   const [isDragOver, setIsDragOver] = useState(false);
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
+  const [expandedBatches, setExpandedBatches] = useState<Set<string>>(new Set());
   const [detailTab, setDetailTab] = useState<'all' | 'success' | 'failed' | 'empty'>('all');
+  const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -66,7 +69,6 @@ const ImportWindow: React.FC = () => {
   );
 
   const handleRemoveFile = useCallback((filePath: string) => {
-    // 简单实现：重置所有数据
     dispatch({ type: 'RESET_ALL' });
   }, [dispatch]);
 
@@ -94,32 +96,67 @@ const ImportWindow: React.FC = () => {
     }
   };
 
+  const getChainTypeLabel = (type: string): { icon: string; label: string; color: string } => {
+    switch (type) {
+      case 'payment_missing':
+        return { icon: '💰', label: '充值未到账', color: '#f59e0b' };
+      case 'crash_freeze':
+        return { icon: '💥', label: '卡死闪退', color: '#ef4444' };
+      case 'item_missing':
+        return { icon: '🎒', label: '道具丢失', color: '#6c5ce7' };
+      case 'disconnect_anomaly':
+        return { icon: '🔌', label: '掉线异常', color: '#e17055' };
+      default:
+        return { icon: '🔗', label: '关联', color: '#74b9ff' };
+    }
+  };
+
   const toggleFileExpand = (path: string) => {
     setExpandedFiles((prev) => {
       const next = new Set(prev);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
-      }
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
       return next;
     });
   };
 
+  const toggleBatchExpand = (batchId: string) => {
+    setExpandedBatches((prev) => {
+      const next = new Set(prev);
+      if (next.has(batchId)) next.delete(batchId);
+      else next.add(batchId);
+      return next;
+    });
+  };
+
+  const currentDetails = useMemo(() => {
+    if (selectedBatchId) {
+      const batch = state.importBatches.find((b) => b.id === selectedBatchId);
+      if (batch) return batch.details;
+    }
+    return state.importSummary?.details || [];
+  }, [selectedBatchId, state.importBatches, state.importSummary]);
+
   const filteredDetails = useMemo(() => {
-    if (!state.importSummary) return [];
-    const details = state.importSummary.details;
     switch (detailTab) {
       case 'success':
-        return details.filter((d) => d.status === 'success' || d.status === 'partial');
+        return currentDetails.filter((d) => d.status === 'success' || d.status === 'partial');
       case 'failed':
-        return details.filter((d) => d.status === 'failed' || d.status === 'unknown_format');
+        return currentDetails.filter((d) => d.status === 'failed' || d.status === 'unknown_format');
       case 'empty':
-        return details.filter((d) => d.status === 'empty');
+        return currentDetails.filter((d) => d.status === 'empty');
       default:
-        return details;
+        return currentDetails;
     }
-  }, [state.importSummary, detailTab]);
+  }, [currentDetails, detailTab]);
+
+  const activeSummary = useMemo(() => {
+    if (selectedBatchId) {
+      const batch = state.importBatches.find((b) => b.id === selectedBatchId);
+      if (batch) return batch;
+    }
+    return state.importSummary;
+  }, [selectedBatchId, state.importBatches, state.importSummary]);
 
   return (
     <div className="window-container">
@@ -171,67 +208,84 @@ const ImportWindow: React.FC = () => {
           </div>
         )}
 
-        {state.logFiles.length > 0 && state.importSummary && (
+        {state.importBatches.length > 0 && (
           <div className="import-detail-panel" style={{ marginTop: 24 }}>
             <div className="import-detail-header">
-              <div className="panel-title" style={{ marginBottom: 0 }}>📋 导入明细</div>
+              <div className="panel-title" style={{ marginBottom: 0 }}>📋 导入审计记录</div>
               <div className="import-stats-bar">
                 <span className="stat-item">
                   <span className="stat-icon" style={{ color: '#10b981' }}>✅</span>
-                  <span>{state.importSummary.successFiles} 成功</span>
+                  <span>{activeSummary?.successFiles || 0} 成功</span>
                 </span>
-                {state.importSummary.emptyFiles > 0 && (
+                {(activeSummary?.emptyFiles || 0) > 0 && (
                   <span className="stat-item">
                     <span className="stat-icon" style={{ color: '#94a3b8' }}>📭</span>
-                    <span>{state.importSummary.emptyFiles} 空文件</span>
+                    <span>{activeSummary.emptyFiles} 空文件</span>
                   </span>
                 )}
-                {state.importSummary.unknownFormatFiles > 0 && (
+                {(activeSummary?.unknownFormatFiles || 0) > 0 && (
                   <span className="stat-item">
                     <span className="stat-icon" style={{ color: '#f97316' }}>❓</span>
-                    <span>{state.importSummary.unknownFormatFiles} 格式错误</span>
+                    <span>{activeSummary.unknownFormatFiles} 格式错误</span>
                   </span>
                 )}
-                {(state.importSummary.totalFailedLines > 0) && (
+                {(activeSummary?.totalFailedLines || 0) > 0 && (
                   <span className="stat-item">
                     <span className="stat-icon" style={{ color: '#ef4444' }}>⚠️</span>
-                    <span>{state.importSummary.totalFailedLines} 行解析失败</span>
+                    <span>{activeSummary.totalFailedLines} 行解析失败</span>
                   </span>
                 )}
                 <span className="stat-item stat-total">
                   <span className="stat-icon">📊</span>
-                  <span>共 {state.importSummary.totalParsedEvents} 条记录</span>
+                  <span>共 {activeSummary?.totalParsedEvents || 0} 条记录</span>
                 </span>
               </div>
             </div>
+
+            {state.importBatches.length > 1 && (
+              <div className="batch-selector">
+                <span className="batch-selector-label">批次：</span>
+                {state.importBatches.map((batch, idx) => (
+                  <button
+                    key={batch.id}
+                    className={`batch-tab ${(selectedBatchId || state.importBatches[state.importBatches.length - 1]?.id) === batch.id ? 'active' : ''}`}
+                    onClick={() => setSelectedBatchId(batch.id)}
+                  >
+                    <span className="batch-tab-id">#{idx + 1}</span>
+                    <span className="batch-tab-time">{formatTimestamp(batch.timestamp)}</span>
+                    <span className="batch-tab-count">{batch.totalParsedEvents}条</span>
+                  </button>
+                ))}
+              </div>
+            )}
 
             <div className="detail-tabs">
               <button
                 className={`detail-tab ${detailTab === 'all' ? 'active' : ''}`}
                 onClick={() => setDetailTab('all')}
               >
-                全部 ({state.importSummary.totalFiles})
+                全部 ({currentDetails.length})
               </button>
               <button
                 className={`detail-tab ${detailTab === 'success' ? 'active' : ''}`}
                 onClick={() => setDetailTab('success')}
                 style={{ color: '#10b981' }}
               >
-                成功 ({state.importSummary.successFiles + state.importSummary.details.filter(d => d.status === 'partial').length})
+                成功 ({currentDetails.filter(d => d.status === 'success' || d.status === 'partial').length})
               </button>
               <button
                 className={`detail-tab ${detailTab === 'failed' ? 'active' : ''}`}
                 onClick={() => setDetailTab('failed')}
                 style={{ color: '#ef4444' }}
               >
-                失败 ({state.importSummary.details.filter(d => d.status === 'failed' || d.status === 'unknown_format').length})
+                失败 ({currentDetails.filter(d => d.status === 'failed' || d.status === 'unknown_format').length})
               </button>
               <button
                 className={`detail-tab ${detailTab === 'empty' ? 'active' : ''}`}
                 onClick={() => setDetailTab('empty')}
                 style={{ color: '#94a3b8' }}
               >
-                空文件 ({state.importSummary.emptyFiles})
+                空文件 ({currentDetails.filter(d => d.status === 'empty').length})
               </button>
             </div>
 
@@ -254,6 +308,9 @@ const ImportWindow: React.FC = () => {
                           {formatSize(detail.size)}
                           {detail.sourceZip && (
                             <span className="source-zip">📦 来自 {detail.sourceZip}</span>
+                          )}
+                          {detail.batchId && (
+                            <span className="batch-badge">批次 {detail.batchId.substring(0, 8)}</span>
                           )}
                         </div>
                       </div>
@@ -308,6 +365,12 @@ const ImportWindow: React.FC = () => {
                                 {detail.failedCount} 行
                               </span>
                             </div>
+                            {detail.batchId && (
+                              <div className="detail-row">
+                                <span className="detail-label">导入批次：</span>
+                                <span className="detail-value font-mono">{detail.batchId.substring(0, 12)}</span>
+                              </div>
+                            )}
                             {detail.errorMessage && (
                               <div className="detail-row">
                                 <span className="detail-label">错误信息：</span>
@@ -316,9 +379,33 @@ const ImportWindow: React.FC = () => {
                             )}
                           </div>
                         </div>
+                        {detail.sampleSuccessLines && detail.sampleSuccessLines.length > 0 && (
+                          <div className="detail-expanded-section">
+                            <div className="detail-section-title">成功记录预览（前5条）</div>
+                            <ul className="sample-list success-samples">
+                              {detail.sampleSuccessLines.map((line, idx) => (
+                                <li key={idx} className="sample-item">
+                                  <span className="sample-line">{line}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {detail.sampleFailedLines && detail.sampleFailedLines.length > 0 && (
+                          <div className="detail-expanded-section">
+                            <div className="detail-section-title">失败行预览（前5条）</div>
+                            <ul className="sample-list failed-samples">
+                              {detail.sampleFailedLines.map((line, idx) => (
+                                <li key={idx} className="sample-item">
+                                  <span className="sample-line">{line}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
                         {detail.sampleErrors && detail.sampleErrors.length > 0 && (
                           <div className="detail-expanded-section">
-                            <div className="detail-section-title">错误示例（最多显示5条）</div>
+                            <div className="detail-section-title">错误说明（最多5条）</div>
                             <ul className="error-list">
                               {detail.sampleErrors.map((err, idx) => (
                                 <li key={idx} className="error-item">
@@ -388,6 +475,80 @@ const ImportWindow: React.FC = () => {
               <div className="stat-label">错误/严重事件</div>
             </div>
           </div>
+
+          {state.importBatches.length > 0 && (
+            <div className="batch-overview" style={{ marginTop: 16 }}>
+              <div className="text-sm text-muted" style={{ marginBottom: 8 }}>
+                📦 导入批次（共 {state.importBatches.length} 次）
+              </div>
+              <div className="batch-list">
+                {state.importBatches.map((batch, idx) => {
+                  const isExpanded = expandedBatches.has(batch.id);
+                  return (
+                    <div key={batch.id} className="batch-item">
+                      <div
+                        className="batch-item-header"
+                        onClick={() => toggleBatchExpand(batch.id)}
+                      >
+                        <span className="expand-icon">{isExpanded ? '▼' : '▶'}</span>
+                        <span className="batch-number">批次 #{idx + 1}</span>
+                        <span className="batch-id font-mono">{batch.id.substring(0, 8)}</span>
+                        <span className="batch-time">{formatTimestamp(batch.timestamp)}</span>
+                        <span className="batch-stats">
+                          {batch.successFiles}✅ {batch.failedFiles > 0 ? `${batch.failedFiles}❌` : ''} {batch.totalParsedEvents}条
+                        </span>
+                        {batch.sourceZipNames.length > 0 && (
+                          <span className="batch-source">📦 {batch.sourceZipNames.join(', ')}</span>
+                        )}
+                      </div>
+                      {isExpanded && (
+                        <div className="batch-item-tree">
+                          <div className="file-tree">
+                            {batch.details.map((d) => {
+                              const si = getStatusInfo(d.status);
+                              return (
+                                <div key={d.path} className="file-tree-item">
+                                  <span className="file-tree-icon">{si.icon}</span>
+                                  <span className="file-tree-name">{d.name}</span>
+                                  <span className="file-tree-count" style={{ color: si.color }}>
+                                    {d.parsedCount}/{d.totalLines}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {state.problemChains.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div className="text-sm text-muted" style={{ marginBottom: 8 }}>
+                🔗 研发排查：问题链（{state.problemChains.length} 条）
+              </div>
+              <div className="chain-list">
+                {state.problemChains.map((chain) => {
+                  const typeInfo = getChainTypeLabel(chain.chainType);
+                  return (
+                    <div key={chain.id} className="chain-item">
+                      <div className="chain-item-header">
+                        <span style={{ color: typeInfo.color }}>{typeInfo.icon}</span>
+                        <span className="chain-type" style={{ color: typeInfo.color }}>{typeInfo.label}</span>
+                        <span className="chain-time font-mono">{formatTimestamp(chain.anchorEvent.timestamp)}</span>
+                        <span className="chain-desc">{chain.description}</span>
+                        <span className="chain-related">{chain.relatedEvents.length} 个关联事件</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {state.allEvents.length > 0 && (
             <div className="flex items-center justify-between mt-4">

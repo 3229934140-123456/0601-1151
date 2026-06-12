@@ -2,7 +2,7 @@ import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { formatTimestamp, formatDuration, buildPlayerSessions, extractUniquePlayerIds } from '@shared/logParser';
 import { getDisplayEvents, buildMergedContent, getMergedGroupEvents } from '@shared/store';
-import type { LogEvent, LogEventType, WorkTicketSummary, LogFile } from '@shared/types';
+import type { LogEvent, LogEventType, WorkTicketSummary, LogFile, ReportSection, ReportHistoryEntry, OperationStatus } from '@shared/types';
 
 type ReportTemplateType = 'custom' | 'payment_missing' | 'crash_freeze' | 'item_missing';
 
@@ -93,11 +93,24 @@ const SummaryWindow: React.FC = () => {
   const [issueDescription, setIssueDescription] = useState('');
   const [summaryPlayerId, setSummaryPlayerId] = useState(state.selectedPlayerId || '');
   const [selectedTemplate, setSelectedTemplate] = useState<ReportTemplateType>('custom');
+  const [sectionConfig, setSectionConfig] = useState<ReportSection[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [historyDetailId, setHistoryDetailId] = useState<string | null>(null);
 
   const currentTemplate = useMemo(
     () => REPORT_TEMPLATES.find((t) => t.id === selectedTemplate) || REPORT_TEMPLATES[0],
     [selectedTemplate]
   );
+
+  const DEFAULT_SECTIONS: ReportSection[] = useMemo(() => [
+    { id: 's1', key: 'problem', label: '问题描述', enabled: true, eventRange: 'all' },
+    { id: 's2', key: 'timeline', label: '会话时间线', enabled: true, eventRange: 'all' },
+    { id: 's3', key: 'marked', label: '已标记异常事件', enabled: true, eventRange: 'marked' },
+    { id: 's4', key: 'keyevents', label: '关键事件', enabled: true, eventRange: 'template_filtered' },
+    { id: 's5', key: 'payments', label: '支付记录', enabled: currentTemplate.id === 'payment_missing', eventRange: 'template_filtered' },
+    { id: 's6', key: 'items', label: '道具变更记录', enabled: currentTemplate.id === 'item_missing', eventRange: 'template_filtered' },
+    { id: 's7', key: 'notes', label: '客服备注', enabled: true, eventRange: 'all' },
+  ], [currentTemplate.id]);
 
   const playerIds = useMemo(() => extractUniquePlayerIds(state.allEvents), [state.allEvents]);
 
@@ -105,6 +118,7 @@ const SummaryWindow: React.FC = () => {
 
   const handleTemplateChange = useCallback((templateId: ReportTemplateType) => {
     setSelectedTemplate(templateId);
+    setSectionConfig([]);
     const template = REPORT_TEMPLATES.find((t) => t.id === templateId);
     if (template) {
       if (template.titleSuggestion && !issueTitle) {
@@ -115,6 +129,28 @@ const SummaryWindow: React.FC = () => {
       }
     }
   }, [issueTitle, issueDescription]);
+
+  const activeSections = useMemo(() => {
+    return sectionConfig.length > 0 ? sectionConfig : DEFAULT_SECTIONS;
+  }, [sectionConfig, DEFAULT_SECTIONS]);
+
+  const toggleSection = useCallback((sectionId: string) => {
+    setSectionConfig((prev) => {
+      const source = prev.length > 0 ? prev : DEFAULT_SECTIONS;
+      return source.map((s) =>
+        s.id === sectionId ? { ...s, enabled: !s.enabled } : s
+      );
+    });
+  }, [DEFAULT_SECTIONS]);
+
+  const setSectionEventRange = useCallback((sectionId: string, range: ReportSection['eventRange']) => {
+    setSectionConfig((prev) => {
+      const source = prev.length > 0 ? prev : DEFAULT_SECTIONS;
+      return source.map((s) =>
+        s.id === sectionId ? { ...s, eventRange: range } : s
+      );
+    });
+  }, [DEFAULT_SECTIONS]);
 
   const markedDisplayEvents = useMemo(
     () => displayEvents.filter((e) => e.isMarked),
@@ -365,8 +401,9 @@ const SummaryWindow: React.FC = () => {
       },
     };
 
-    currentTemplate.sectionOrder.forEach((section) => {
-      const renderer = sectionRenderers[section];
+    const enabledSections = activeSections.filter((s) => s.enabled);
+    enabledSections.forEach((sec) => {
+      const renderer = sectionRenderers[sec.key];
       if (renderer) {
         report += renderer();
       }
@@ -441,9 +478,28 @@ const SummaryWindow: React.FC = () => {
     }
   };
 
+  const saveReportHistory = useCallback((status: OperationStatus, filePath?: string) => {
+    const text = generateReportText();
+    const entry: ReportHistoryEntry = {
+      id: Math.random().toString(36).substring(2, 15),
+      timestamp: new Date(),
+      templateId: currentTemplate.id,
+      templateName: currentTemplate.name,
+      playerId: summaryPlayerId || '未指定',
+      playerName: playerAllDisplayEvents[0]?.playerName,
+      sections: activeSections.filter((s) => s.enabled),
+      exportStatus: status,
+      exportFilePath: filePath,
+      contentLength: text.length,
+      content: text,
+    };
+    dispatch({ type: 'ADD_REPORT_HISTORY', payload: entry });
+  }, [currentTemplate, summaryPlayerId, playerAllDisplayEvents, activeSections, dispatch]);
+
   const exportReport = async () => {
     if (!window.electronAPI) {
       addNotification('export', 'not_supported', '当前环境不支持导出操作', '请在桌面应用中使用此功能，或手动复制报告内容保存');
+      saveReportHistory('not_supported');
       return;
     }
     try {
@@ -453,26 +509,35 @@ const SummaryWindow: React.FC = () => {
 
       if (result === null || result === undefined) {
         addNotification('export', 'cancelled', '导出已取消', '您取消了文件保存对话框');
+        saveReportHistory('cancelled');
       } else if (result === false) {
         addNotification('export', 'failed', '导出失败', '请检查磁盘空间或权限');
+        saveReportHistory('failed');
       } else if (typeof result === 'boolean' && result === true) {
         addNotification('export', 'success', '报告导出成功', `文件已保存`);
+        saveReportHistory('success');
       } else if (typeof result === 'string') {
         addNotification('export', 'success', '报告导出成功', `文件已保存至：${result}`);
+        saveReportHistory('success', result);
       } else if (typeof result === 'object' && result !== null) {
         const res = result as { success: boolean; filePath?: string; error?: string; cancelled?: boolean };
         if (res.cancelled) {
           addNotification('export', 'cancelled', '导出已取消', '您取消了文件保存对话框');
+          saveReportHistory('cancelled');
         } else if (res.success && res.filePath) {
           addNotification('export', 'success', '报告导出成功', `文件已保存至：${res.filePath}`);
+          saveReportHistory('success', res.filePath);
         } else if (res.success) {
           addNotification('export', 'success', '报告导出成功', `文件已保存`);
+          saveReportHistory('success');
         } else {
           addNotification('export', 'failed', '导出失败', res.error || '未知错误');
+          saveReportHistory('failed');
         }
       }
     } catch (err) {
       addNotification('export', 'failed', '导出失败', String(err));
+      saveReportHistory('failed');
     }
   };
 
@@ -652,8 +717,37 @@ const SummaryWindow: React.FC = () => {
       )}
 
       <div className="panel">
-        <div className="panel-title">报告预览 & 导出</div>
+        <div className="panel-title">报告配置 & 导出</div>
         <div className="form-group">
+          <label className="label">报告章节（勾选要包含的章节）</label>
+          <div className="section-config-list">
+            {activeSections.map((sec) => (
+              <div key={sec.id} className="section-config-item">
+                <label className="section-config-toggle">
+                  <input
+                    type="checkbox"
+                    checked={sec.enabled}
+                    onChange={() => toggleSection(sec.id)}
+                  />
+                  <span className="section-config-label">{sec.label}</span>
+                </label>
+                {sec.enabled && (sec.key === 'keyevents' || sec.key === 'marked' || sec.key === 'payments' || sec.key === 'items') && (
+                  <select
+                    className="select select-sm"
+                    value={sec.eventRange}
+                    onChange={(e) => setSectionEventRange(sec.id, e.target.value as ReportSection['eventRange'])}
+                  >
+                    <option value="all">所有事件</option>
+                    <option value="marked">仅已标记</option>
+                    <option value="template_filtered">模板筛选</option>
+                  </select>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="form-group">
+          <label className="label">报告预览</label>
           <textarea
             className="textarea"
             value={generateReportText()}
@@ -673,6 +767,74 @@ const SummaryWindow: React.FC = () => {
             💾 导出给研发的报告
           </button>
         </div>
+        {state.reportHistory.length > 0 && (
+          <div style={{ marginTop: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <label className="label" style={{ marginBottom: 0 }}>📜 导出历史（{state.reportHistory.length}）</label>
+              <button
+                className="btn btn-sm btn-ghost"
+                onClick={() => setShowHistory(!showHistory)}
+              >
+                {showHistory ? '收起' : '展开'}
+              </button>
+            </div>
+            {showHistory && (
+              <div className="history-list">
+                {state.reportHistory.map((entry) => {
+                  const isDetail = historyDetailId === entry.id;
+                  const statusIcon = entry.exportStatus === 'success' ? '✅' : entry.exportStatus === 'cancelled' ? '🚫' : entry.exportStatus === 'not_supported' ? '⚠️' : '❌';
+                  return (
+                    <div key={entry.id} className="history-item">
+                      <div className="history-item-header" onClick={() => setHistoryDetailId(isDetail ? null : entry.id)}>
+                        <span>{statusIcon}</span>
+                        <span className="history-template">{entry.templateName}</span>
+                        <span className="history-player">玩家 {entry.playerId}</span>
+                        <span className="history-time">{formatTimestamp(entry.timestamp)}</span>
+                        <span className="history-chars">{entry.contentLength}字</span>
+                        {entry.exportFilePath && (
+                          <span className="history-path" title={entry.exportFilePath}>📁 {entry.exportFilePath.split(/[\\/]/).pop()}</span>
+                        )}
+                      </div>
+                      {isDetail && (
+                        <div className="history-item-detail">
+                          <div className="detail-grid">
+                            <div className="detail-row">
+                              <span className="detail-label">模板：</span>
+                              <span className="detail-value">{entry.templateName}</span>
+                            </div>
+                            <div className="detail-row">
+                              <span className="detail-label">导出状态：</span>
+                              <span className="detail-value">{statusIcon} {entry.exportStatus}</span>
+                            </div>
+                            {entry.exportFilePath && (
+                              <div className="detail-row">
+                                <span className="detail-label">文件路径：</span>
+                                <span className="detail-value font-mono">{entry.exportFilePath}</span>
+                              </div>
+                            )}
+                            <div className="detail-row">
+                              <span className="detail-label">包含章节：</span>
+                              <span className="detail-value">{entry.sections.map((s) => s.label).join(', ')}</span>
+                            </div>
+                          </div>
+                          <div className="history-content-preview">
+                            <textarea
+                              className="textarea"
+                              value={entry.content}
+                              readOnly
+                              rows={8}
+                              style={{ fontFamily: 'Consolas, Monaco, monospace', fontSize: 11, marginTop: 8 }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

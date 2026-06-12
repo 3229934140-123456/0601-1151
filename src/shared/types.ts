@@ -30,6 +30,7 @@ export interface LogEvent {
   isMergedRep?: boolean;
   mergedRepId?: string;
   csNote?: string;
+  batchId?: string;
 }
 
 export interface LogFile {
@@ -38,6 +39,7 @@ export interface LogFile {
   content: string;
   size?: number;
   error?: string;
+  batchId?: string;
 }
 
 export type FileParseStatus = 'success' | 'partial' | 'failed' | 'empty' | 'unknown_format';
@@ -52,7 +54,25 @@ export interface FileImportDetail {
   failedCount: number;
   errorMessage?: string;
   sampleErrors?: string[];
+  sampleSuccessLines?: string[];
+  sampleFailedLines?: string[];
   sourceZip?: string;
+  batchId?: string;
+}
+
+export interface ImportBatch {
+  id: string;
+  timestamp: Date;
+  sourcePaths: string[];
+  sourceZipNames: string[];
+  fileCount: number;
+  successFiles: number;
+  failedFiles: number;
+  emptyFiles: number;
+  unknownFormatFiles: number;
+  totalParsedEvents: number;
+  totalFailedLines: number;
+  details: FileImportDetail[];
 }
 
 export interface ImportSummary {
@@ -75,6 +95,39 @@ export interface OperationNotification {
   message: string;
   detail?: string;
   timestamp: Date;
+}
+
+export interface ProblemChain {
+  id: string;
+  playerId: string;
+  anchorEvent: LogEvent;
+  relatedEvents: LogEvent[];
+  chainType: 'payment_missing' | 'crash_freeze' | 'item_missing' | 'disconnect_anomaly';
+  startTime: Date;
+  endTime: Date;
+  description: string;
+}
+
+export interface ReportSection {
+  id: string;
+  key: string;
+  label: string;
+  enabled: boolean;
+  eventRange: 'all' | 'marked' | 'template_filtered';
+}
+
+export interface ReportHistoryEntry {
+  id: string;
+  timestamp: Date;
+  templateId: string;
+  templateName: string;
+  playerId: string;
+  playerName?: string;
+  sections: ReportSection[];
+  exportStatus: OperationStatus;
+  exportFilePath?: string;
+  contentLength: number;
+  content: string;
 }
 
 export interface PlayerSession {

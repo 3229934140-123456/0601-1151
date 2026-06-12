@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useReducer, useEffect, useCallback, useRef } from 'react';
 import type { AppState, AppAction } from '@shared/store';
 import { initialState, appReducer } from '@shared/store';
-import { parseLogFilesWithDetail, extractUniquePlayerIds } from '@shared/logParser';
+import { parseLogFilesWithDetail, extractUniquePlayerIds, buildProblemChains } from '@shared/logParser';
 import type { LogFile, SearchFilter, OperationNotification } from '@shared/types';
 import { SAMPLE_LOG_FILE } from '@shared/sampleData';
 
@@ -20,10 +20,12 @@ const AppContext = createContext<AppContextType | null>(null);
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const selectedPlayerIdRef = useRef(state.selectedPlayerId);
+  const stateRef = useRef(state);
 
   useEffect(() => {
     selectedPlayerIdRef.current = state.selectedPlayerId;
-  }, [state.selectedPlayerId]);
+    stateRef.current = state;
+  }, [state]);
 
   useEffect(() => {
     if (window.electronAPI) {
@@ -62,8 +64,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         payload: { isLoading: true, progress: 50, message: '正在解析日志内容...' },
       });
 
-      const { events, summary } = parseLogFilesWithDetail(files);
+      const { events, summary, batch } = parseLogFilesWithDetail(files, stateRef.current.allEvents);
       dispatch({ type: 'SET_IMPORT_SUMMARY', payload: summary });
+      dispatch({ type: 'ADD_IMPORT_BATCH', payload: batch });
       dispatch({ type: 'SET_ALL_EVENTS', payload: events });
 
       const playerIds = extractUniquePlayerIds(events);
@@ -82,7 +85,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           : summary.successFiles > 0
           ? 'success'
           : 'failed';
-      const msg = `导入完成：${summary.successFiles}个文件成功，${summary.totalParsedEvents}条记录`;
+      const msg = `导入完成：批次 ${batch.id.substring(0, 8)}，${summary.successFiles}个文件成功，${summary.totalParsedEvents}条记录`;
       const detail =
         summary.emptyFiles > 0 || summary.unknownFormatFiles > 0
           ? `${summary.emptyFiles}个空文件，${summary.unknownFormatFiles}个格式错误`
@@ -129,7 +132,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     (filter: SearchFilter) => {
       dispatch({ type: 'SET_CURRENT_FILTER', payload: filter });
 
-      let filtered = [...state.allEvents];
+      let filtered = [...stateRef.current.allEvents];
 
       if (filter.playerId) {
         filtered = filtered.filter((e) => e.playerId === filter.playerId);
@@ -166,8 +169,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
 
       dispatch({ type: 'SET_FILTERED_EVENTS', payload: filtered });
+
+      if (filter.playerId && filter.playerId !== 'unknown') {
+        const chains = buildProblemChains(stateRef.current.allEvents, filter.playerId);
+        dispatch({ type: 'SET_PROBLEM_CHAINS', payload: chains });
+      }
     },
-    [state.allEvents]
+    []
   );
 
   return (

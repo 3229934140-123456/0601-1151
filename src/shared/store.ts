@@ -1,8 +1,9 @@
-import type { LogEvent, LogFile, SearchFilter, WorkTicketSummary, ImportSummary, OperationNotification, OperationStatus } from './types';
+import type { LogEvent, LogFile, SearchFilter, WorkTicketSummary, ImportSummary, ImportBatch, OperationNotification, OperationStatus, ProblemChain, ReportHistoryEntry, ReportSection } from './types';
 
 export interface AppState {
   logFiles: LogFile[];
   importSummary: ImportSummary | null;
+  importBatches: ImportBatch[];
   allEvents: LogEvent[];
   filteredEvents: LogEvent[];
   selectedPlayerId: string | null;
@@ -19,11 +20,15 @@ export interface AppState {
   loadingProgress: number;
   loadingMessage: string;
   notifications: OperationNotification[];
+  problemChains: ProblemChain[];
+  reportSections: ReportSection[];
+  reportHistory: ReportHistoryEntry[];
 }
 
 export const initialState: AppState = {
   logFiles: [],
   importSummary: null,
+  importBatches: [],
   allEvents: [],
   filteredEvents: [],
   selectedPlayerId: null,
@@ -40,12 +45,16 @@ export const initialState: AppState = {
   loadingProgress: 0,
   loadingMessage: '',
   notifications: [],
+  problemChains: [],
+  reportSections: [],
+  reportHistory: [],
 };
 
 export type AppAction =
   | { type: 'SET_LOADING'; payload: { isLoading: boolean; progress?: number; message?: string } }
   | { type: 'ADD_LOG_FILES'; payload: LogFile[] }
   | { type: 'SET_IMPORT_SUMMARY'; payload: ImportSummary }
+  | { type: 'ADD_IMPORT_BATCH'; payload: ImportBatch }
   | { type: 'SET_ALL_EVENTS'; payload: LogEvent[] }
   | { type: 'SET_FILTERED_EVENTS'; payload: LogEvent[] }
   | { type: 'SET_SELECTED_PLAYER'; payload: string | null }
@@ -65,6 +74,9 @@ export type AppAction =
   | { type: 'SET_SUMMARY'; payload: WorkTicketSummary | null }
   | { type: 'SET_ACTIVE_WINDOW'; payload: AppState['activeWindow'] }
   | { type: 'UPDATE_EVENT'; payload: LogEvent }
+  | { type: 'SET_PROBLEM_CHAINS'; payload: ProblemChain[] }
+  | { type: 'SET_REPORT_SECTIONS'; payload: ReportSection[] }
+  | { type: 'ADD_REPORT_HISTORY'; payload: ReportHistoryEntry }
   | {
       type: 'ADD_NOTIFICATION';
       payload: { type: OperationNotification['type']; status: OperationStatus; message: string; detail?: string };
@@ -92,6 +104,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return {
         ...state,
         importSummary: action.payload,
+      };
+
+    case 'ADD_IMPORT_BATCH':
+      return {
+        ...state,
+        importBatches: [...state.importBatches, action.payload],
       };
 
     case 'SET_ALL_EVENTS':
@@ -282,14 +300,36 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         notifications: state.notifications.filter((n) => n.id !== action.payload),
       };
 
+    case 'SET_PROBLEM_CHAINS':
+      return {
+        ...state,
+        problemChains: action.payload,
+      };
+
+    case 'SET_REPORT_SECTIONS':
+      return {
+        ...state,
+        reportSections: action.payload,
+      };
+
+    case 'ADD_REPORT_HISTORY':
+      return {
+        ...state,
+        reportHistory: [action.payload, ...state.reportHistory],
+      };
+
     case 'RESET_ALL':
       return {
         ...initialState,
         savedFilters: state.savedFilters,
         activeWindow: 'import',
         mergedRepresentatives: new Map(),
+        importBatches: [],
         importSummary: null,
         notifications: [],
+        problemChains: [],
+        reportSections: [],
+        reportHistory: state.reportHistory,
       };
 
     default:
