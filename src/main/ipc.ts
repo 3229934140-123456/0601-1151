@@ -1,11 +1,21 @@
 import { ipcMain, dialog, app, clipboard } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
+import AdmZip from 'adm-zip';
 
 const FILTERS_FILE = path.join(app.getPath('userData'), 'saved-filters.json');
+const LOG_EXTENSIONS = ['.log', '.txt', '.json'];
 
 interface SavedFilters {
   [key: string]: unknown;
+}
+
+interface LogFileResult {
+  path: string;
+  name: string;
+  content?: string;
+  size?: number;
+  error?: string;
 }
 
 function readFiltersFile(): SavedFilters {
@@ -25,6 +35,77 @@ function writeFiltersFile(filters: SavedFilters): void {
     fs.writeFileSync(FILTERS_FILE, JSON.stringify(filters, null, 2));
   } catch (err) {
     console.error('Failed to save filters:', err);
+  }
+}
+
+function isLogFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return LOG_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+function isZipFile(fileName: string): boolean {
+  return fileName.toLowerCase().endsWith('.zip');
+}
+
+function extractFilesFromZip(zipPath: string): LogFileResult[] {
+  const results: LogFileResult[] = [];
+  try {
+    const zip = new AdmZip(zipPath);
+    const zipEntries = zip.getEntries();
+
+    for (const entry of zipEntries) {
+      if (entry.isDirectory) continue;
+      if (!isLogFile(entry.name)) continue;
+
+      try {
+        const content = entry.getData().toString('utf-8');
+        results.push({
+          path: `${zipPath}::${entry.entryName}`,
+          name: `${path.basename(zipPath)}/${entry.entryName}`,
+          content,
+          size: entry.header.size,
+        });
+      } catch (err) {
+        results.push({
+          path: `${zipPath}::${entry.entryName}`,
+          name: `${path.basename(zipPath)}/${entry.entryName}`,
+          error: String(err),
+        });
+      }
+    }
+  } catch (err) {
+    results.push({
+      path: zipPath,
+      name: path.basename(zipPath),
+      error: `解压失败: ${String(err)}`,
+    });
+  }
+  return results;
+}
+
+function readSingleFile(filePath: string): LogFileResult[] {
+  if (isZipFile(filePath)) {
+    return extractFilesFromZip(filePath);
+  }
+
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    return [
+      {
+        path: filePath,
+        name: path.basename(filePath),
+        content,
+        size: fs.statSync(filePath).size,
+      },
+    ];
+  } catch (err) {
+    return [
+      {
+        path: filePath,
+        name: path.basename(filePath),
+        error: String(err),
+      },
+    ];
   }
 }
 
@@ -50,43 +131,17 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('read-log-file', async (_event, filePath: string) => {
-    try {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      return {
-        path: filePath,
-        name: path.basename(filePath),
-        content,
-        size: fs.statSync(filePath).size,
-      };
-    } catch (err) {
-      return {
-        path: filePath,
-        name: path.basename(filePath),
-        error: String(err),
-      };
-    }
+    const results = readSingleFile(filePath);
+    return results.length > 0 ? results[0] : { path: filePath, name: path.basename(filePath), error: '无法读取文件' };
   });
 
   ipcMain.handle('read-log-files', async (_event, filePaths: string[]) => {
-    const results = [];
+    const allResults: LogFileResult[] = [];
     for (const filePath of filePaths) {
-      try {
-        const content = fs.readFileSync(filePath, 'utf-8');
-        results.push({
-          path: filePath,
-          name: path.basename(filePath),
-          content,
-          size: fs.statSync(filePath).size,
-        });
-      } catch (err) {
-        results.push({
-          path: filePath,
-          name: path.basename(filePath),
-          error: String(err),
-        });
-      }
+      const results = readSingleFile(filePath);
+      allResults.push(...results);
     }
-    return results;
+    return allResults;
   });
 
   ipcMain.handle('export-report', async (_event, report: string, defaultPath: string) => {

@@ -440,6 +440,16 @@ input, textarea, select {
   background: rgba(0, 184, 148, 0.08);
 }
 
+.event-item.merged-rep {
+  background: rgba(233, 69, 96, 0.06);
+  border-left: 3px solid #e94560;
+  padding-left: 13px;
+}
+
+.event-item.merged-rep:hover {
+  background: rgba(233, 69, 96, 0.12);
+}
+
 .event-checkbox {
   margin-top: 2px;
   width: 16px;

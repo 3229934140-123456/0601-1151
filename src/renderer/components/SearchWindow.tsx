@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { formatTimestamp, extractUniquePlayerIds } from '@shared/logParser';
+import { getDisplayEvents, getMergedGroupEvents, buildMergedContent } from '@shared/store';
 import type { LogEventType, LogEvent, SearchFilter } from '@shared/types';
 
 const EVENT_TYPES: { value: LogEventType; label: string }[] = [
@@ -111,11 +112,18 @@ const SearchWindow: React.FC = () => {
 
   const copyEventText = async (event: LogEvent) => {
     if (window.electronAPI) {
+      const content = event.isMergedRep
+        ? buildMergedContent(event, state.allEvents)
+        : event.content;
       await window.electronAPI.copyToClipboard(
-        `[${formatTimestamp(event.timestamp)}] ${getEventTypeLabel(event.type)} - ${event.content}`
+        `[${formatTimestamp(event.timestamp)}] ${getEventTypeLabel(event.type)} - ${content}`
       );
     }
   };
+
+  const filteredDisplayEvents = useMemo(() => {
+    return getDisplayEvents(state.filteredEvents);
+  }, [state.filteredEvents]);
 
   if (state.allEvents.length === 0) {
     return (
@@ -240,7 +248,7 @@ const SearchWindow: React.FC = () => {
       <div className="panel">
         <div className="flex items-center justify-between mb-3">
           <div className="panel-title" style={{ marginBottom: 0 }}>
-            搜索结果（{state.filteredEvents.length} 条）
+            搜索结果（{filteredDisplayEvents.length} 条）
           </div>
           <div className="flex gap-2">
             <button
@@ -260,7 +268,7 @@ const SearchWindow: React.FC = () => {
           </div>
         </div>
 
-        {state.filteredEvents.length === 0 ? (
+        {filteredDisplayEvents.length === 0 ? (
           <div className="empty-state" style={{ padding: '40px 20px' }}>
             <div className="empty-state-icon">📭</div>
             <div className="empty-state-title">没有匹配的事件</div>
@@ -268,13 +276,15 @@ const SearchWindow: React.FC = () => {
           </div>
         ) : (
           <div className="event-list">
-            {state.filteredEvents.map((event) => {
+            {filteredDisplayEvents.map((event) => {
               const isSelected = state.selectedEventIds.includes(event.id);
               const sevClass = `severity-${event.severity}`;
+              const isMerged = event.isMergedRep;
+              const group = isMerged ? getMergedGroupEvents(event, state.allEvents) : [event];
               return (
                 <div
                   key={event.id}
-                  className={`event-item ${isSelected ? 'selected' : ''} ${event.isMarked ? 'marked' : ''}`}
+                  className={`event-item ${isSelected ? 'selected' : ''} ${event.isMarked ? 'marked' : ''} ${isMerged ? 'merged-rep' : ''}`}
                 >
                   <input
                     type="checkbox"
@@ -292,8 +302,20 @@ const SearchWindow: React.FC = () => {
                   <span className="event-time">{formatTimestamp(event.timestamp)}</span>
                   <span className={`event-badge badge-${event.type}`}>
                     {getEventTypeLabel(event.type)}
+                    {isMerged && `（合并${group.length}条）`}
                   </span>
-                  <span className={`${sevClass} event-content`}>{event.content}</span>
+                  <span className={`${sevClass} event-content`}>
+                    {isMerged ? (
+                      <>
+                        <span className="tag" style={{ background: '#e94560', color: '#fff', marginRight: 6 }}>
+                          🔗 {group.length}条
+                        </span>
+                        {event.content}
+                      </>
+                    ) : (
+                      event.content
+                    )}
+                  </span>
                   <div className="event-meta">
                     {event.isMarked && event.markType && (
                       <span className={`mark-tag mark-${event.markType}`}>已标记</span>

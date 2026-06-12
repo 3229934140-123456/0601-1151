@@ -1,5 +1,6 @@
 export const SAMPLE_LOG_CONTENT = `[2024-06-10 14:32:15] [INFO] Player 玩家剑仙 LOGIN player_id:10086123 ip:192.168.1.100 device:iPhone14,3
 [2024-06-10 14:32:20] [INFO] 玩家 10086123 进入主城 长安 player_name:剑仙 level:85
+[2024-06-10 14:33:00] [INFO] 玩家 10086123 与NPC 对话 npc_id:npc_elder_01
 [2024-06-10 14:33:45] [INFO] 玩家 10086123 接收任务 任务ID:quest_00123 任务名称:寻找失落的神剑
 [2024-06-10 14:35:22] [INFO] 玩家 10086123 打开背包 player_id:10086123 inventory_size:36
 [2024-06-10 14:35:30] [INFO] Item Change player_id:10086123 item_id:item_gold_001 item_name:金币 change:+10000 reason:任务奖励
@@ -14,12 +15,13 @@ export const SAMPLE_LOG_CONTENT = `[2024-06-10 14:32:15] [INFO] Player 玩家剑
 [2024-06-10 14:42:10] [INFO] 玩家 10086123 发送聊天 channel:世界 content:有人组队刷副本吗？
 [2024-06-10 14:43:55] [INFO] 玩家 10086123 与玩家 10086456 组队 player_name:月影
 [2024-06-10 14:45:30] [INFO] 玩家 10086123 进入副本 dungeon_id:dungeon_crypt_03
+[2024-06-10 14:46:00] [INFO] 玩家 10086123 拾取掉落 item_id:item_material_012 count:5
 [2024-06-10 14:47:12] [ERROR] 玩家 10086123 在副本中发生异常 error_code:CLIENT_FREEZE_003 描述:客户端无响应超过30秒
 [2024-06-10 14:47:45] [ERROR] DISCONNECT player_id:10086123 reason:Connection timeout last_ping:45秒前
 [2024-06-10 14:48:20] [INFO] Player LOGIN player_id:10086123 ip:192.168.1.100 重新连接
 [2024-06-10 14:48:35] [WARNING] 玩家 10086123 重连后发现背包数据异常 inventory_hash_mismatch
 [2024-06-10 14:49:00] [INFO] 系统自动修复背包数据 player_id:10086123 restored_items:3
-[2024-06-10 14:50:15] [INFO] 玩家 10086123 打开充值商店 player_id:10086123
+[2024-06-10 14:50:15] [INFO] 玩家 10086123 打开充值商店
 [2024-06-10 14:51:02] [INFO] 支付发起 player_id:10086123 order_no:PAY20240610145102002 amount:328.00 product:3280钻石
 [2024-06-10 14:51:30] [ERROR] PAYMENT_FAILED player_id:10086123 order_no:PAY20240610145102002 error:支付网关超时
 [2024-06-10 14:52:00] [INFO] 玩家 10086123 退出副本 返回主城

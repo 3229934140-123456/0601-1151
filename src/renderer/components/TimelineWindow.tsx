@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { buildPlayerSessions, formatDuration, formatTimestamp, extractUniquePlayerIds, getPlayerEvents } from '@shared/logParser';
+import { getDisplayEvents, getMergedGroupEvents } from '@shared/store';
 import type { LogEvent } from '@shared/types';
 
 const getEventTypeLabel = (type: LogEvent['type']): string => {
@@ -35,8 +36,12 @@ const TimelineWindow: React.FC = () => {
     return getPlayerEvents(state.allEvents, state.selectedPlayerId);
   }, [state.allEvents, state.selectedPlayerId]);
 
+  const playerDisplayEvents = useMemo(() => {
+    return getDisplayEvents(playerEvents);
+  }, [playerEvents]);
+
   const keyEvents = useMemo(() => {
-    return playerEvents.filter(
+    return playerDisplayEvents.filter(
       (e) =>
         e.type === 'login' ||
         e.type === 'logout' ||
@@ -47,7 +52,7 @@ const TimelineWindow: React.FC = () => {
         e.severity === 'critical' ||
         e.isMarked
     );
-  }, [playerEvents]);
+  }, [playerDisplayEvents]);
 
   if (state.allEvents.length === 0) {
     return (
@@ -88,7 +93,7 @@ const TimelineWindow: React.FC = () => {
                 <>
                   <span>事件总数：</span>
                   <span className="text-primary font-mono" style={{ marginRight: 20 }}>
-                    {playerEvents.length}
+                    {playerDisplayEvents.length}
                   </span>
                   <span>会话数：</span>
                   <span className="text-primary font-mono">{sessions.length}</span>
@@ -149,28 +154,49 @@ const TimelineWindow: React.FC = () => {
               <div className="text-muted">暂无关键事件</div>
             ) : (
               <div className="timeline-container">
-                {keyEvents.map((event) => (
-                  <div key={event.id} className={`timeline-item ${event.type}`}>
-                    <div className="timeline-header">
-                      <span className="timeline-time">{formatTimestamp(event.timestamp)}</span>
-                      <span className={`event-badge badge-${event.type}`}>
-                        {getEventTypeLabel(event.type)}
-                      </span>
-                      {event.isMarked && event.markType && (
-                        <span className={`mark-tag mark-${event.markType}`}>
-                          {event.markType === 'freeze' && '🔴 疑似卡死'}
-                          {event.markType === 'abnormal' && '🟡 异常行为'}
-                          {event.markType === 'bug' && '💜 疑似Bug'}
-                          {event.markType === 'important' && '🔵 重要事件'}
+                {keyEvents.map((event) => {
+                  const isMerged = event.isMergedRep;
+                  const group = isMerged ? getMergedGroupEvents(event, state.allEvents) : [event];
+                  return (
+                    <div key={event.id} className={`timeline-item ${event.type}`}>
+                      <div className="timeline-header">
+                        <span className="timeline-time">{formatTimestamp(event.timestamp)}</span>
+                        <span className={`event-badge badge-${event.type}`}>
+                          {getEventTypeLabel(event.type)}
+                          {isMerged && `（合并${group.length}条）`}
                         </span>
-                      )}
-                      <span className={`severity-${event.severity}`} style={{ marginLeft: 'auto', fontSize: 11 }}>
-                        [{event.severity.toUpperCase()}]
-                      </span>
+                        {event.isMarked && event.markType && (
+                          <span className={`mark-tag mark-${event.markType}`}>
+                            {event.markType === 'freeze' && '🔴 疑似卡死'}
+                            {event.markType === 'abnormal' && '🟡 异常行为'}
+                            {event.markType === 'bug' && '💜 疑似Bug'}
+                            {event.markType === 'important' && '🔵 重要事件'}
+                          </span>
+                        )}
+                        <span className={`severity-${event.severity}`} style={{ marginLeft: 'auto', fontSize: 11 }}>
+                          [{event.severity.toUpperCase()}]
+                        </span>
+                      </div>
+                      <div className="timeline-desc">
+                        {isMerged ? (
+                          <>
+                            <div>{event.content}</div>
+                            <div className="text-sm text-muted mt-1">
+                              {group.slice(0, 2).map((g, i) => (
+                                <div key={g.id}>
+                                  {i + 1}. {g.rawTimestamp} {g.content}
+                                </div>
+                              ))}
+                              {group.length > 2 && <div>... 以及 {group.length - 2} 条</div>}
+                            </div>
+                          </>
+                        ) : (
+                          event.content
+                        )}
+                      </div>
                     </div>
-                    <div className="timeline-desc">{event.content}</div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -178,38 +204,53 @@ const TimelineWindow: React.FC = () => {
           <div className="panel">
             <div className="panel-title">完整事件列表</div>
             <div className="event-list">
-              {playerEvents.map((event) => (
-                <div
-                  key={event.id}
-                  className={`event-item ${event.isMarked ? 'marked' : ''}`}
-                  onClick={() => {
-                    const isSelected = state.selectedEventIds.includes(event.id);
-                    if (isSelected) {
-                      dispatch({ type: 'REMOVE_SELECTED_EVENT', payload: event.id });
-                    } else {
-                      dispatch({ type: 'ADD_SELECTED_EVENT', payload: event.id });
-                    }
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    className="event-checkbox"
-                    checked={state.selectedEventIds.includes(event.id)}
-                    onChange={() => {}}
-                  />
-                  <span className="event-time">{formatTimestamp(event.timestamp)}</span>
-                  <span className={`event-badge badge-${event.type}`}>
-                    {getEventTypeLabel(event.type)}
-                  </span>
-                  <span className="event-content">{event.content}</span>
-                  <div className="event-meta">
-                    {event.isMarked && event.markType && (
-                      <span className={`mark-tag mark-${event.markType}`}>已标记</span>
-                    )}
-                    {event.isMerged && <span className="tag">已合并</span>}
+              {playerDisplayEvents.map((event) => {
+                const isMerged = event.isMergedRep;
+                const group = isMerged ? getMergedGroupEvents(event, state.allEvents) : [event];
+                return (
+                  <div
+                    key={event.id}
+                    className={`event-item ${event.isMarked ? 'marked' : ''} ${isMerged ? 'merged-rep' : ''}`}
+                    onClick={() => {
+                      const isSelected = state.selectedEventIds.includes(event.id);
+                      if (isSelected) {
+                        dispatch({ type: 'REMOVE_SELECTED_EVENT', payload: event.id });
+                      } else {
+                        dispatch({ type: 'ADD_SELECTED_EVENT', payload: event.id });
+                      }
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      className="event-checkbox"
+                      checked={state.selectedEventIds.includes(event.id)}
+                      onChange={() => {}}
+                    />
+                    <span className="event-time">{formatTimestamp(event.timestamp)}</span>
+                    <span className={`event-badge badge-${event.type}`}>
+                      {getEventTypeLabel(event.type)}
+                    </span>
+                    <span className="event-content">
+                      {isMerged ? (
+                        <>
+                          <span className="tag" style={{ background: '#e94560', color: '#fff', marginRight: 6 }}>
+                            🔗 {group.length}条合并
+                          </span>
+                          {event.content}
+                        </>
+                      ) : (
+                        event.content
+                      )}
+                    </span>
+                    <div className="event-meta">
+                      {event.isMarked && event.markType && (
+                        <span className={`mark-tag mark-${event.markType}`}>已标记</span>
+                      )}
+                      {isMerged && <span className="tag">已合并</span>}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
             {state.selectedEventIds.length > 0 && (
               <div className="flex items-center justify-between mt-3">

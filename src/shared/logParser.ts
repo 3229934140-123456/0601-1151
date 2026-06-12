@@ -72,8 +72,11 @@ function extractPlayerId(content: string): string | null {
     /用户[_\s]?id[:\s]+(\d+)/i,
     /uid[:\s]+(\d+)/i,
     /pid[:\s]+(\d+)/i,
+    /玩家\s*[:：]?\s*(\d{5,})/,
     /\[(\d{6,})\]/,
     /#(\d{6,})/,
+    /与玩家\s*(\d{5,})/,
+    /玩家\s*#?\s*(\d{5,})/,
   ];
 
   for (const pattern of patterns) {
@@ -92,6 +95,7 @@ function extractPlayerName(content: string): string | undefined {
     /玩家名[:\s]+["']?([^"'\s,，]+)["']?/i,
     /角色名[:\s]+["']?([^"'\s,，]+)["']?/i,
     /name[:\s]+["']?([^"'\s,，]{2,})["']?/i,
+    /Player\s+([^\s]+?)\s+(?:LOGIN|登录)/i,
   ];
 
   for (const pattern of patterns) {
@@ -125,21 +129,40 @@ function extractDetails(content: string): Record<string, string | number | boole
   return Object.keys(details).length > 0 ? details : undefined;
 }
 
-export function parseLogLine(line: string, index: number, fileName: string): LogEvent | null {
+function isLikelyPlayerEvent(content: string): boolean {
+  return /玩家|进入|退出|副本|任务|战斗|道具|背包|装备|强化|充值|支付|聊天|组队|登录|登出|掉线|崩溃/i.test(content);
+}
+
+export function parseLogLine(
+  line: string,
+  index: number,
+  fileName: string,
+  lastKnownPlayerId?: string,
+  lastKnownPlayerName?: string
+): LogEvent | null {
   if (!line.trim()) return null;
 
   const timestamp = parseTimestamp(line) || new Date();
-  const playerId = extractPlayerId(line) || 'unknown';
+  let playerId = extractPlayerId(line);
+  let playerName = extractPlayerName(line);
   const type = detectEventType(line);
   const severity = detectSeverity(line);
+
+  if (!playerId && isLikelyPlayerEvent(line) && lastKnownPlayerId) {
+    playerId = lastKnownPlayerId;
+  }
+
+  if (!playerName && lastKnownPlayerName && playerId === lastKnownPlayerId) {
+    playerName = lastKnownPlayerName;
+  }
 
   return {
     id: generateId(),
     timestamp,
     rawTimestamp: line.match(/\[[^\]]+\]|\d{4}[^]*\d{2}:\d{2}:\d{2}/)?.[0] || '',
     type,
-    playerId,
-    playerName: extractPlayerName(line),
+    playerId: playerId || 'unknown',
+    playerName,
     content: line.replace(/\[[^\]]+\]\s*/, '').trim() || line,
     rawContent: line,
     details: extractDetails(line),
@@ -150,13 +173,30 @@ export function parseLogLine(line: string, index: number, fileName: string): Log
 export function parseLogContent(content: string, fileName: string): LogEvent[] {
   const lines = content.split(/\r?\n/);
   const events: LogEvent[] = [];
+  let lastKnownPlayerId: string | undefined;
+  let lastKnownPlayerName: string | undefined;
+  let lastEventTime: Date | null = null;
 
-  lines.forEach((line, index) => {
-    const event = parseLogLine(line, index, fileName);
-    if (event) {
-      events.push(event);
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    const event = parseLogLine(line, index, fileName, lastKnownPlayerId, lastKnownPlayerName);
+    if (!event) continue;
+
+    if (lastEventTime && event.timestamp.getTime() - lastEventTime.getTime() > 1000 * 60 * 30) {
+      lastKnownPlayerId = undefined;
+      lastKnownPlayerName = undefined;
     }
-  });
+
+    if (event.playerId && event.playerId !== 'unknown') {
+      lastKnownPlayerId = event.playerId;
+      if (event.playerName) {
+        lastKnownPlayerName = event.playerName;
+      }
+    }
+
+    lastEventTime = event.timestamp;
+    events.push(event);
+  }
 
   return events.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 }
@@ -164,7 +204,9 @@ export function parseLogContent(content: string, fileName: string): LogEvent[] {
 export function parseLogFiles(files: LogFile[]): LogEvent[] {
   const allEvents: LogEvent[] = [];
 
-  for (const file of files) {
+  const sortedFiles = [...files].sort((a, b) => a.name.localeCompare(b.name));
+
+  for (const file of sortedFiles) {
     if (file.error) continue;
     const events = parseLogContent(file.content, file.name);
     allEvents.push(...events);

@@ -10,6 +10,7 @@ export interface AppState {
   selectedEventIds: string[];
   markedEvents: Map<string, { note: string; markType: 'freeze' | 'abnormal' | 'bug' | 'important' }>;
   mergedEventGroups: string[][];
+  mergedRepresentatives: Map<string, string[]>;
   csNotes: string[];
   summary: WorkTicketSummary | null;
   activeWindow: 'import' | 'timeline' | 'search' | 'mark' | 'summary';
@@ -28,6 +29,7 @@ export const initialState: AppState = {
   selectedEventIds: [],
   markedEvents: new Map(),
   mergedEventGroups: [],
+  mergedRepresentatives: new Map(),
   csNotes: [],
   summary: null,
   activeWindow: 'import',
@@ -163,16 +165,50 @@ export function appReducer(state: AppState, action: AppAction): AppState {
 
     case 'MERGE_EVENTS': {
       const mergedIds = action.payload;
-      const newAllEvents = state.allEvents.map((e) =>
-        mergedIds.includes(e.id) ? { ...e, isMerged: true, mergedIds } : e
-      );
+      if (mergedIds.length < 2) return state;
+
+      const sorted = [...mergedIds].sort((a, b) => {
+        const ea = state.allEvents.find((e) => e.id === a);
+        const eb = state.allEvents.find((e) => e.id === b);
+        if (!ea || !eb) return 0;
+        return ea.timestamp.getTime() - eb.timestamp.getTime();
+      });
+      const repId = sorted[0];
+
+      const newReps = new Map(state.mergedRepresentatives);
+      newReps.set(repId, sorted);
+
+      const newAllEvents = state.allEvents.map((e) => {
+        if (!sorted.includes(e.id)) return e;
+        if (e.id === repId) {
+          return {
+            ...e,
+            isMerged: true,
+            mergedIds: sorted,
+            isMergedRep: true,
+          };
+        }
+        return {
+          ...e,
+          isMerged: true,
+          mergedIds: sorted,
+          isMergedRep: false,
+          mergedRepId: repId,
+        };
+      });
+
       return {
         ...state,
         allEvents: newAllEvents,
-        filteredEvents: state.filteredEvents.map((e) =>
-          mergedIds.includes(e.id) ? { ...e, isMerged: true, mergedIds } : e
-        ),
-        mergedEventGroups: [...state.mergedEventGroups, mergedIds],
+        filteredEvents: state.filteredEvents.map((e) => {
+          if (!sorted.includes(e.id)) return e;
+          if (e.id === repId) {
+            return { ...e, isMerged: true, mergedIds: sorted, isMergedRep: true };
+          }
+          return { ...e, isMerged: true, mergedIds: sorted, isMergedRep: false, mergedRepId: repId };
+        }),
+        mergedEventGroups: [...state.mergedEventGroups, sorted],
+        mergedRepresentatives: newReps,
       };
     }
 
@@ -214,9 +250,35 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...initialState,
         savedFilters: state.savedFilters,
         activeWindow: 'import',
+        mergedRepresentatives: new Map(),
       };
 
     default:
       return state;
   }
+}
+
+export function getDisplayEvents(events: LogEvent[]): LogEvent[] {
+  return events.filter((e) => !e.isMerged || e.isMergedRep);
+}
+
+export function getMergedGroupEvents(repEvent: LogEvent, allEvents: LogEvent[]): LogEvent[] {
+  if (!repEvent.mergedIds || !repEvent.isMergedRep) return [repEvent];
+  return repEvent.mergedIds
+    .map((id) => allEvents.find((e) => e.id === id))
+    .filter((e): e is LogEvent => !!e)
+    .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+}
+
+export function buildMergedContent(repEvent: LogEvent, allEvents: LogEvent[]): string {
+  const group = getMergedGroupEvents(repEvent, allEvents);
+  if (group.length <= 1) return repEvent.content;
+  const parts = group.map((e) => `[${e.rawTimestamp || ''}] ${e.content}`.trim());
+  return `【合并${group.length}条记录】\n${parts.join('\n')}`;
+}
+
+export function buildMergedRawContent(repEvent: LogEvent, allEvents: LogEvent[]): string {
+  const group = getMergedGroupEvents(repEvent, allEvents);
+  if (group.length <= 1) return repEvent.rawContent;
+  return group.map((e) => e.rawContent).join('\n');
 }

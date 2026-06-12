@@ -27,6 +27,8 @@ export interface LogEvent {
   markType?: 'freeze' | 'abnormal' | 'bug' | 'important';
   isMerged?: boolean;
   mergedIds?: string[];
+  isMergedRep?: boolean;
+  mergedRepId?: string;
   csNote?: string;
 }
 

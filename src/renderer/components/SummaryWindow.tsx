@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { formatTimestamp, formatDuration, buildPlayerSessions, extractUniquePlayerIds } from '@shared/logParser';
+import { getDisplayEvents, buildMergedContent, getMergedGroupEvents } from '@shared/store';
 import type { LogEvent, LogEventType, WorkTicketSummary } from '@shared/types';
 
 const getEventTypeLabel = (type: LogEvent['type']): string => {
@@ -28,25 +29,27 @@ const SummaryWindow: React.FC = () => {
 
   const playerIds = useMemo(() => extractUniquePlayerIds(state.allEvents), [state.allEvents]);
 
-  const markedEvents = useMemo(
-    () => state.allEvents.filter((e) => e.isMarked),
-    [state.allEvents]
+  const displayEvents = useMemo(() => getDisplayEvents(state.allEvents), [state.allEvents]);
+
+  const markedDisplayEvents = useMemo(
+    () => displayEvents.filter((e) => e.isMarked),
+    [displayEvents]
   );
 
   const playerMarkedEvents = useMemo(() => {
-    if (!summaryPlayerId) return markedEvents;
-    return markedEvents.filter((e) => e.playerId === summaryPlayerId);
-  }, [markedEvents, summaryPlayerId]);
+    if (!summaryPlayerId) return markedDisplayEvents;
+    return markedDisplayEvents.filter((e) => e.playerId === summaryPlayerId);
+  }, [markedDisplayEvents, summaryPlayerId]);
 
   const playerSessions = useMemo(() => {
     if (!summaryPlayerId) return [];
     return buildPlayerSessions(state.allEvents, summaryPlayerId);
   }, [state.allEvents, summaryPlayerId]);
 
-  const playerAllEvents = useMemo(() => {
-    if (!summaryPlayerId) return state.allEvents;
-    return state.allEvents.filter((e) => e.playerId === summaryPlayerId);
-  }, [state.allEvents, summaryPlayerId]);
+  const playerAllDisplayEvents = useMemo(() => {
+    if (!summaryPlayerId) return displayEvents;
+    return displayEvents.filter((e) => e.playerId === summaryPlayerId);
+  }, [displayEvents, summaryPlayerId]);
 
   const timelineSummary = useMemo(() => {
     if (playerSessions.length === 0) return '';
@@ -61,13 +64,20 @@ const SummaryWindow: React.FC = () => {
     return lines.join('\n');
   }, [playerSessions]);
 
+  const eventContentForOutput = (event: LogEvent): string => {
+    if (event.isMergedRep) {
+      return buildMergedContent(event, state.allEvents);
+    }
+    return event.content;
+  };
+
   const summary: WorkTicketSummary = useMemo(() => {
     return {
       playerId: summaryPlayerId || '未指定',
-      playerName: playerAllEvents[0]?.playerName,
+      playerName: playerAllDisplayEvents[0]?.playerName,
       issueTitle,
       issueDescription,
-      keyEvents: playerAllEvents.filter(
+      keyEvents: playerAllDisplayEvents.filter(
         (e) =>
           e.type === 'login' ||
           e.type === 'disconnect' ||
@@ -81,7 +91,7 @@ const SummaryWindow: React.FC = () => {
       csNotes: state.csNotes,
       suggestedActions: [],
     };
-  }, [summaryPlayerId, playerAllEvents, playerMarkedEvents, issueTitle, issueDescription, timelineSummary, state.csNotes]);
+  }, [summaryPlayerId, playerAllDisplayEvents, playerMarkedEvents, issueTitle, issueDescription, timelineSummary, state.csNotes]);
 
   useEffect(() => {
     dispatch({ type: 'SET_SUMMARY', payload: summary });
@@ -104,8 +114,13 @@ const SummaryWindow: React.FC = () => {
     report += `【已标记异常事件】（共${summary.markedEvents.length}条）\n\n`;
 
     summary.markedEvents.forEach((event, idx) => {
-      report += `${idx + 1}. [${formatTimestamp(event.timestamp)}] ${getEventTypeLabel(event.type)}\n`;
-      report += `   ${event.content}\n`;
+      const group = event.isMergedRep ? getMergedGroupEvents(event, state.allEvents) : [event];
+      report += `${idx + 1}. [${formatTimestamp(event.timestamp)}] ${getEventTypeLabel(event.type)}`;
+      if (event.isMergedRep) report += `（合并${group.length}条）`;
+      report += `\n`;
+      const content = eventContentForOutput(event);
+      report += content.split('\n').map((line) => `   ${line}`).join('\n');
+      report += `\n`;
       if (event.markNote) {
         report += `   客服标记：${event.markNote}\n`;
       }
@@ -116,10 +131,15 @@ const SummaryWindow: React.FC = () => {
     report += `【关键事件】（登录/掉线/支付/错误）\n\n`;
 
     summary.keyEvents.slice(0, 50).forEach((event, idx) => {
+      const group = event.isMergedRep ? getMergedGroupEvents(event, state.allEvents) : [event];
       report += `${idx + 1}. [${formatTimestamp(event.timestamp)}] [${getEventTypeLabel(
         event.type
-      )}] [${event.severity.toUpperCase()}]\n`;
-      report += `   ${event.content}\n\n`;
+      )}] [${event.severity.toUpperCase()}]`;
+      if (event.isMergedRep) report += `（合并${group.length}条）`;
+      report += `\n`;
+      const content = eventContentForOutput(event);
+      report += content.split('\n').map((line) => `   ${line}`).join('\n');
+      report += `\n\n`;
     });
 
     if (summary.keyEvents.length > 50) {
@@ -153,12 +173,13 @@ const SummaryWindow: React.FC = () => {
   const copyKeySnippet = async () => {
     if (window.electronAPI && playerMarkedEvents.length > 0) {
       const text = playerMarkedEvents
-        .map(
-          (e) =>
-            `[${formatTimestamp(e.timestamp)}] ${getEventTypeLabel(e.type)}: ${e.content}${
-              e.markNote ? ` (${e.markNote})` : ''
-            }`
-        )
+        .map((e) => {
+          const content = eventContentForOutput(e);
+          const prefix = `[${formatTimestamp(e.timestamp)}] ${getEventTypeLabel(e.type)}`;
+          return `${prefix}${
+            e.isMergedRep ? `（合并${getMergedGroupEvents(e, state.allEvents).length}条）` : ''
+          }: ${content}${e.markNote ? ` (${e.markNote})` : ''}`;
+        })
         .join('\n');
       await window.electronAPI.copyToClipboard(text);
     }
@@ -169,6 +190,33 @@ const SummaryWindow: React.FC = () => {
       const defaultName = `game-log-report-${summary.playerId}-${Date.now()}.txt`;
       await window.electronAPI.exportReport(generateReportText(), defaultName);
     }
+  };
+
+  const renderMarkedEventContent = (event: LogEvent): React.ReactNode => {
+    if (!event.isMergedRep) {
+      return <span className="event-content">{event.content}</span>;
+    }
+    const group = getMergedGroupEvents(event, state.allEvents);
+    return (
+      <div className="event-content">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span className="tag" style={{ background: '#e94560', color: '#fff' }}>
+            合并 {group.length} 条
+          </span>
+          <span>{event.content}</span>
+        </div>
+        <div className="mt-1 text-sm text-muted" style={{ paddingLeft: 2 }}>
+          {group
+            .slice(0, 2)
+            .map((g, i) => (
+              <div key={g.id}>
+                {i + 1}. {g.rawTimestamp} {g.content}
+              </div>
+            ))}
+          {group.length > 2 && <div>... 以及 {group.length - 2} 条更多记录</div>}
+        </div>
+      </div>
+    );
   };
 
   if (state.allEvents.length === 0) {
@@ -243,7 +291,7 @@ const SummaryWindow: React.FC = () => {
                 <span className={`event-badge badge-${event.type}`}>
                   {getEventTypeLabel(event.type)}
                 </span>
-                <span className="event-content">{event.content}</span>
+                {renderMarkedEventContent(event)}
                 {event.markType && (
                   <span className={`mark-tag mark-${event.markType}`}>
                     {event.markType === 'freeze' && '疑似卡死'}
@@ -265,6 +313,7 @@ const SummaryWindow: React.FC = () => {
                 <div key={e.id} className="note-item" style={{ marginTop: 8 }}>
                   <div className="text-sm text-muted mb-1">
                     {formatTimestamp(e.timestamp)}
+                    {e.isMergedRep && `（合并${getMergedGroupEvents(e, state.allEvents).length}条）`}
                   </div>
                   <div className="note-text">{e.markNote}</div>
                 </div>
@@ -278,7 +327,9 @@ const SummaryWindow: React.FC = () => {
         {playerSessions.length === 0 ? (
           <div className="text-muted">请选择具体玩家查看会话时间线</div>
         ) : (
-          <div className="summary-value">{summary.timelineSummary}</div>
+          <div className="summary-value" style={{ whiteSpace: 'pre-wrap' }}>
+            {summary.timelineSummary}
+          </div>
         )}
       </div>
 

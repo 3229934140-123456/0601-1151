@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { formatTimestamp } from '@shared/logParser';
+import { getDisplayEvents, getMergedGroupEvents, buildMergedContent } from '@shared/store';
 import type { LogEvent, LogEventType } from '@shared/types';
 
 const MARK_TYPES: { value: 'freeze' | 'abnormal' | 'bug' | 'important'; label: string; icon: string }[] = [
@@ -40,8 +41,8 @@ const MarkWindow: React.FC = () => {
     [state.allEvents, state.selectedEventIds]
   );
 
-  const displayEvents = useMemo(() => {
-    let events = state.allEvents;
+  const allDisplayEvents = useMemo(() => {
+    let events = getDisplayEvents(state.allEvents);
     if (state.selectedPlayerId) {
       events = events.filter((e) => e.playerId === state.selectedPlayerId);
     }
@@ -51,8 +52,8 @@ const MarkWindow: React.FC = () => {
     return events;
   }, [state.allEvents, state.selectedPlayerId, filterMarked]);
 
-  const markedEvents = useMemo(
-    () => state.allEvents.filter((e) => e.isMarked),
+  const markedDisplayEvents = useMemo(
+    () => getDisplayEvents(state.allEvents).filter((e) => e.isMarked),
     [state.allEvents]
   );
 
@@ -99,17 +100,47 @@ const MarkWindow: React.FC = () => {
   };
 
   const copyMarkedEvents = async () => {
-    const text = markedEvents
-      .map(
-        (e) =>
-          `[${formatTimestamp(e.timestamp)}] [${getEventTypeLabel(e.type)}] ${e.content}${
-            e.markNote ? `\n标记说明：${e.markNote}` : ''
-          }`
-      )
-      .join('\n\n');
-    if (window.electronAPI) {
-      await window.electronAPI.copyToClipboard(text);
+    const lines: string[] = [];
+    for (const e of markedDisplayEvents) {
+      const content = e.isMergedRep
+        ? buildMergedContent(e, state.allEvents)
+        : e.content;
+      lines.push(
+        `[${formatTimestamp(e.timestamp)}] [${getEventTypeLabel(e.type)}] ${content}${
+          e.markNote ? `\n标记说明：${e.markNote}` : ''
+        }`
+      );
     }
+    if (window.electronAPI) {
+      await window.electronAPI.copyToClipboard(lines.join('\n\n'));
+    }
+  };
+
+  const renderEventContent = (event: LogEvent): React.ReactNode => {
+    if (!event.isMergedRep) {
+      return <span className={`severity-${event.severity} event-content`}>{event.content}</span>;
+    }
+    const group = getMergedGroupEvents(event, state.allEvents);
+    return (
+      <div className={`severity-${event.severity} event-content`}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span className="tag" style={{ background: '#e94560', color: '#fff' }}>
+            合并 {group.length} 条
+          </span>
+          <span>{event.content}</span>
+        </div>
+        <div className="mt-1 text-sm text-muted" style={{ paddingLeft: 2 }}>
+          {group
+            .slice(0, 3)
+            .map((g, i) => (
+              <div key={g.id}>
+                {i + 1}. {g.rawTimestamp} {g.content}
+              </div>
+            ))}
+          {group.length > 3 && <div>... 以及 {group.length - 3} 条更多记录</div>}
+        </div>
+      </div>
+    );
   };
 
   if (state.allEvents.length === 0) {
@@ -225,7 +256,7 @@ const MarkWindow: React.FC = () => {
       <div className="panel">
         <div className="flex items-center justify-between mb-3">
           <div className="panel-title" style={{ marginBottom: 0 }}>
-            已标记事件（{markedEvents.length}）
+            已标记事件（{markedDisplayEvents.length}）
           </div>
           <div className="flex gap-2">
             <label className="checkbox-item">
@@ -239,14 +270,14 @@ const MarkWindow: React.FC = () => {
             <button
               className="btn btn-sm btn-ghost"
               onClick={copyMarkedEvents}
-              disabled={markedEvents.length === 0}
+              disabled={markedDisplayEvents.length === 0}
             >
               📋 复制全部
             </button>
             <button
               className="btn btn-sm btn-primary"
               onClick={() => dispatch({ type: 'SET_ACTIVE_WINDOW', payload: 'summary' })}
-              disabled={markedEvents.length === 0}
+              disabled={markedDisplayEvents.length === 0}
             >
               生成摘要 →
             </button>
@@ -254,18 +285,18 @@ const MarkWindow: React.FC = () => {
         </div>
 
         <div className="event-list">
-          {displayEvents.length === 0 ? (
+          {allDisplayEvents.length === 0 ? (
             <div className="empty-state" style={{ padding: '40px 20px' }}>
               <div className="empty-state-icon" style={{ fontSize: 40 }}>📭</div>
               <div className="empty-state-title">暂无事件</div>
             </div>
           ) : (
-            displayEvents.map((event) => (
+            allDisplayEvents.map((event) => (
               <div
                 key={event.id}
                 className={`event-item ${event.isMarked ? 'marked' : ''} ${
                   state.selectedEventIds.includes(event.id) ? 'selected' : ''
-                }`}
+                } ${event.isMergedRep ? 'merged-rep' : ''}`}
               >
                 <input
                   type="checkbox"
@@ -283,9 +314,7 @@ const MarkWindow: React.FC = () => {
                 <span className={`event-badge badge-${event.type}`}>
                   {getEventTypeLabel(event.type)}
                 </span>
-                <span className={`severity-${event.severity} event-content`}>
-                  {event.content}
-                </span>
+                {renderEventContent(event)}
                 <div className="event-meta">
                   {event.isMarked && event.markType && (
                     <span className={`mark-tag mark-${event.markType}`}>
@@ -293,7 +322,11 @@ const MarkWindow: React.FC = () => {
                       {MARK_TYPES.find((t) => t.value === event.markType)?.label}
                     </span>
                   )}
-                  {event.isMerged && <span className="tag">已合并</span>}
+                  {event.isMergedRep && (
+                    <span className="tag" style={{ background: '#e94560', color: '#fff' }}>
+                      🔗 合并记录
+                    </span>
+                  )}
                   {event.isMarked ? (
                     <button
                       className="btn btn-sm btn-ghost"
@@ -336,8 +369,10 @@ const MarkWindow: React.FC = () => {
             <div className="text-sm text-muted font-mono mb-2">
               {formatTimestamp(markModalEvent.timestamp)}
             </div>
-            <div className="text-sm mb-4" style={{ color: '#ccd6f6', lineHeight: 1.6 }}>
-              {markModalEvent.content}
+            <div className="text-sm mb-4" style={{ color: '#ccd6f6', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+              {markModalEvent.isMergedRep
+                ? buildMergedContent(markModalEvent, state.allEvents)
+                : markModalEvent.content}
             </div>
             <div className="form-group">
               <label className="label">标记类型</label>
